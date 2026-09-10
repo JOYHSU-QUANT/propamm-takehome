@@ -53,6 +53,45 @@ and `reserve_ratio_after`. The last field is the final **real** Y/X reserve rati
 excluding fees. It differs from the endpoint price `(y_after+vy)/(x_after+vx)`
 of the curve used for this trade.
 
+### Quote flow
+
+The diagram follows `get_quote_detailed`, which `get_quote` calls internally.
+Stable-only, curve-only, and mixed trades all use the same sequence: `min()`
+allocates the stable input, and `_curve_out` returns zero for zero curve input.
+All reserve updates use net input; fees are accounted for separately.
+
+```mermaid
+flowchart TD
+    Start([Receive swap quote request]) --> Validate{"Valid inputs? See A10"}
+    Validate -->|No| Invalid([Raise ValueError])
+    Validate -->|Yes| Fee["fee_charged = amount_in * (fee_bps / 10000)<br/>net_in = amount_in - fee_charged<br/>cp_before = reserve_y / reserve_x"]
+    Fee --> Capacity["capacity = _stable_capacity(...)<br/>Y to X: max(0, (P*x - y) / 2)<br/>X to Y: max(0, (y - P*x) / (2*P))"]
+    Capacity --> Allocate["stable_in = min(net_in, capacity)"]
+    Allocate --> Stable["Compute stable_out at oracle P<br/>X to Y: stable_in * P<br/>Y to X: stable_in / P<br/>Update real reserves rx, ry"]
+    Stable --> Remainder["curve_in = net_in - stable_in"]
+    Remainder --> Curve["curve_out = _curve_out(rx, ry, alpha, curve_in, direction)<br/>If curve_in <= 0: return 0<br/>Otherwise: X = alpha * rx; Y = alpha * ry<br/>X to Y: Y * (curve_in / (X + curve_in))<br/>Y to X: X * (curve_in / (Y + curve_in))"]
+    Curve --> Update["Update real reserves rx, ry<br/>amount_out = stable_out + curve_out"]
+
+    Update --> OutputValid{"amount_out finite and positive?"}
+    OutputValid -->|No| Invalid
+    OutputValid -->|Yes| Liquidity{"amount_out < initial<br/>real output-token reserve?"}
+    Liquidity -->|No| Insufficient([Raise InsufficientLiquidity])
+    Liquidity -->|Yes| Direction{"Swap direction?"}
+    Direction -->|X to Y| Sell["effective_price = amount_out / amount_in"]
+    Direction -->|Y to X| Buy["effective_price = amount_in / amount_out"]
+    Sell --> Ratio["reserve_ratio_after = ry / rx"]
+    Buy --> Ratio
+    Ratio --> Prices{"effective_price, cp_before, reserve_ratio_after<br/>all finite and positive?"}
+    Prices -->|No| Invalid
+    Prices -->|Yes| Detail["Build QuoteBreakdown<br/>get_quote_detailed returns amounts, price, fee, breakdown"]
+    Detail --> Return(["get_quote returns amount_out, effective_price, fee_charged"])
+```
+
+`effective_price` uses gross input and is always in Y per X. The liquidity
+check uses the initial **real** output reserve, excluding virtual liquidity.
+Reserve updates in this diagram describe the quote calculation; the function
+does not execute a swap or persist pool state.
+
 ### Assumptions
 
 - **A1:** 50/50 means equal oracle value (`P*x = y`), not equal token quantities.
