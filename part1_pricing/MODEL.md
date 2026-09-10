@@ -27,23 +27,50 @@ Invalid inputs, insufficient real liquidity, or invalid computed values reject t
 
 ## Pricing equations
 
-Let $x,y$ be real reserves, $P$ the oracle price in Y per X, $a$ gross input,
-$b$ the fee in basis points, and $q$ net input:
+| Symbol | Meaning | Unit |
+|---|---|---|
+| $x,y$ | Real reserves before the swap | Token X, token Y |
+| $x_s,y_s$ | Real reserves after the stable phase | Token X, token Y |
+| $x_t,y_t$ | Real reserves at a point during the curve phase | Token X, token Y |
+| $v_x,v_y$ | Virtual reserves, fixed during the curve phase | Token X, token Y |
+| $X,Y$ | Effective reserves at the start of the curve phase | Token X, token Y |
+| $\alpha$ | Concentration factor | Dimensionless |
+| $P$ | Oracle price | Y per X |
+| $p_c$ | Curve-implied marginal price before the swap | Y per X |
+| $a$ | Gross input (`amount_in`) | Input token |
+| $b$ | Fee rate (`fee_bps`) | Basis points |
+| $f$ | Fee charged (`fee_charged`) | Input token |
+| $q$ | Input available for pricing after deducting fees (`net_in`) | Input token |
+| $c$ | Maximum input executable at oracle $P$ before reaching balance (`capacity`); zero if the direction does not improve balance | Input token |
+| $s,r$ | Stable input, remaining curve input | Input token |
+| $o_s,o_c,o$ | Stable output, curve output, total output | Output token |
+| $L^2$ | Curve invariant | Token X $\times$ token Y |
+
+For X to Y, input is token X and output is token Y; the reverse swap exchanges these units.
+
+**Input allocation**
 
 $$
-f=a\frac{b}{10^4},\qquad q=a-f.
+f=a\frac{b}{10^4},\qquad q=a-f,\qquad s=\min(q,c),\qquad r=q-s.
 $$
 
-Stable input is $s=\min(q,c)$, where $c$ is the capacity below; remaining curve
-input is $r=q-s$. After the stable phase, build effective reserves from $x_s,y_s$:
+`net_in` comes from the trader's input and fee; `capacity` comes from the pool's
+reserves, oracle price, and trade direction. For example, in case E with zero fees,
+`net_in = 20,000` USDT and `capacity = 12,620` USDT: 12,620 goes to Stable and
+the remaining 7,380 goes to Curve. If `net_in <= capacity`, all input goes to Stable.
+
+**Curve construction after the stable phase**
 
 $$
 v_x=(\alpha-1)x_s,\quad v_y=(\alpha-1)y_s,\qquad
 X=x_s+v_x=\alpha x_s,\quad Y=y_s+v_y=\alpha y_s.
 $$
 
-Hold $v_x,v_y$ fixed during the curve phase, with invariant
-$(x+v_x)(y+v_y)=L^2=XY$. Let $o=o_s+o_c$ be total output.
+$$
+(x_t+v_x)(y_t+v_y)=L^2=XY,\qquad o=o_s+o_c.
+$$
+
+**Outputs and effective price**
 
 | Quantity | X to Y | Y to X |
 |---|---|---|
