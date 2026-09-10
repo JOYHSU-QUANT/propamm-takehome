@@ -1,136 +1,98 @@
-# Part 1 — Pricing Model Notes
+# Part 1 - Pricing Model
 
-[Back to project README](../README.md)
-
-## Approach
-
-The quote is computed in two phases, after deducting the input-token fee.
-Let `x` and `y` be real reserves, `P` the oracle price in Y per X, and `q` the net input.
-
-1. **Stable phase.** Rebalancing trades execute at `P` until `P*x = y`.
-   For Y -> X, the stable input capacity is `max(0, (P*x - y)/2)` Y.
-   For X -> Y, it is `max(0, (y - P*x)/(2*P))` X.
-   Use the smaller of this capacity and `q`, then update the real reserves.
-2. **Curve phase.** From the post-stable reserves `xs, ys`, set
-   `vx = xs*(alpha - 1)` and `vy = ys*(alpha - 1)`. Hold these virtual reserves
-   fixed during this phase. With `X = xs + vx`, `Y = ys + vy`, and remaining input `r`,
-   the invariant is `(x + vx)*(y + vy) = L^2 = X*Y`.
-   X -> Y returns `Y*r/(X+r)`; Y -> X returns `X*r/(Y+r)`.
-3. **Return.** Sum the two outputs and reject trades that exhaust the real output
-   reserve. Effective price uses gross input: `amount_out/amount_in` for X -> Y,
-   and `amount_in/amount_out` for Y -> X. Both are expressed in Y per X.
-
-At the start of a quote, `cpPrice = (alpha*y)/(alpha*x) = y/x`.
-The pool's pre-fee marginal prices are `bid = min(P, cpPrice)` and
-`ask = max(P, cpPrice)`. Alpha changes curve depth and finite-trade slippage,
-but not the starting marginal price. A balanced pool has zero marginal spread;
-a finite trade still incurs slippage.
-
-`get_quote_detailed` additionally exposes phase inputs/outputs, `cp_price_before`,
-and `reserve_ratio_after`. The last field is the final **real** Y/X reserve ratio,
-excluding fees. It differs from the endpoint price `(y_after+vy)/(x_after+vx)`
-of the curve used for this trade.
+[Project README](../README.md) / [Implementation](pricing.py) / [Results](results.md)
 
 ## Quote flow
 
-The diagram follows `get_quote_detailed`, which `get_quote` calls internally.
-Stable-only, curve-only, and mixed trades all use the same sequence: `min()`
-allocates the stable input, and `_curve_out` returns zero for zero curve input.
-All reserve updates use net input; fees are accounted for separately.
+Main calculation path; a phase with zero input returns zero output.
+Invalid inputs, insufficient real liquidity, or invalid computed values reject the quote.
 
 ```mermaid
 flowchart TD
-    Start([Receive swap quote request]) --> Validate{"Valid inputs? See A10"}
-    Validate -->|No| Invalid([Raise ValueError])
-    Validate -->|Yes| Fee["fee_charged = amount_in * (fee_bps / 10000)<br/>net_in = amount_in - fee_charged<br/>cp_before = reserve_y / reserve_x"]
-    Fee --> Capacity["capacity = _stable_capacity(...)<br/>Y to X: max(0, (P*x - y) / 2)<br/>X to Y: max(0, (y - P*x) / (2*P))"]
-    Capacity --> Allocate["stable_in = min(net_in, capacity)"]
-    Allocate --> Stable["Compute stable_out at oracle P<br/>X to Y: stable_in * P<br/>Y to X: stable_in / P<br/>Update real reserves rx, ry"]
-    Stable --> Remainder["curve_in = net_in - stable_in"]
-    Remainder --> Curve["curve_out = _curve_out(rx, ry, alpha, curve_in, direction)<br/>If curve_in <= 0: return 0<br/>Otherwise: X = alpha * rx; Y = alpha * ry<br/>X to Y: Y * (curve_in / (X + curve_in))<br/>Y to X: X * (curve_in / (Y + curve_in))"]
-    Curve --> Update["Update real reserves rx, ry<br/>amount_out = stable_out + curve_out"]
-
-    Update --> OutputValid{"amount_out finite and positive?"}
-    OutputValid -->|No| Invalid
-    OutputValid -->|Yes| Liquidity{"amount_out < initial<br/>real output-token reserve?"}
-    Liquidity -->|No| Insufficient([Raise InsufficientLiquidity])
-    Liquidity -->|Yes| Direction{"Swap direction?"}
-    Direction -->|X to Y| Sell["effective_price = amount_out / amount_in"]
-    Direction -->|Y to X| Buy["effective_price = amount_in / amount_out"]
-    Sell --> Ratio["reserve_ratio_after = ry / rx"]
-    Buy --> Ratio
-    Ratio --> Prices{"effective_price, cp_before, reserve_ratio_after<br/>all finite and positive?"}
-    Prices -->|No| Invalid
-    Prices -->|Yes| Detail["Build QuoteBreakdown<br/>get_quote_detailed returns amounts, price, fee, breakdown"]
-    Detail --> Return(["get_quote returns amount_out, effective_price, fee_charged"])
+    Validate[Validate inputs] --> Fee[Deduct input fee]
+    Fee --> Stable[Allocate stable input at oracle P<br/>Update reserves]
+    Stable --> Curve[Price remaining input on curve<br/>Update reserves]
+    Curve --> Output[Sum outputs<br/>Check output and real liquidity]
+    Output --> Price[Compute and validate prices]
+    Price --> Return([Return output, effective price, fee])
 ```
 
-`effective_price` uses gross input and is always in Y per X. The liquidity
-check uses the initial **real** output reserve, excluding virtual liquidity.
-Reserve updates in this diagram describe the quote calculation; the function
-does not execute a swap or persist pool state.
+## Pricing equations
+
+Let $x,y$ be real reserves, $P$ the oracle price in Y per X, $a$ gross input,
+$b$ the fee in basis points, and $q$ net input:
+
+$$
+f=a\frac{b}{10^4},\qquad q=a-f.
+$$
+
+Stable input is $s=\min(q,c)$, where $c$ is the capacity below; remaining curve
+input is $r=q-s$. After the stable phase, build effective reserves from $x_s,y_s$:
+
+$$
+v_x=(\alpha-1)x_s,\quad v_y=(\alpha-1)y_s,\qquad
+X=x_s+v_x=\alpha x_s,\quad Y=y_s+v_y=\alpha y_s.
+$$
+
+Hold $v_x,v_y$ fixed during the curve phase, with invariant
+$(x+v_x)(y+v_y)=L^2=XY$. Let $o=o_s+o_c$ be total output.
+
+| Quantity | X to Y | Y to X |
+|---|---|---|
+| Stable capacity $c$ | $\max\left(0,\frac{y-Px}{2P}\right)$ | $\max\left(0,\frac{Px-y}{2}\right)$ |
+| Stable output $o_s$ | $sP$ | $s/P$ |
+| Curve output $o_c$ | $\frac{Yr}{X+r}$ | $\frac{Xr}{Y+r}$ |
+| All-in effective price (Y/X) | $o/a$ | $a/o$ |
+
+For example, Y to X reaches balance when $P(x-s/P)=y+s$, giving
+$c=(Px-y)/2$ when positive. The curve equation $(X-o_c)(Y+r)=XY$
+gives $o_c=Xr/(Y+r)$.
+
+At the start of a quote, the pre-fee marginal prices are:
+
+$$
+p_c=\frac{\alpha y}{\alpha x}=\frac{y}{x},\qquad
+\mathrm{bid}=\min(P,p_c),\qquad \mathrm{ask}=\max(P,p_c).
+$$
+
+Alpha changes depth, not the starting price. `get_quote_detailed` also reports
+phase amounts and `reserve_ratio_after`: the final real Y/X ratio excluding fees,
+not the endpoint price of the fixed-virtual-reserve curve.
 
 ## Assumptions
 
-- **A1:** 50/50 means equal oracle value (`P*x = y`), not equal token quantities.
-- **A2:** Only trades improving that balance receive stable-phase execution at `P`.
-- **A3:** Virtual reserves are built after the stable phase. A trade crossing the
-  boundary therefore enters the curve at `P`, with continuous marginal pricing.
-  The assignment does not specify this transition; this is an explicit modeling choice.
-- **A4:** Fees are deducted once from the input token; only net input is priced.
-- **A5:** Effective price includes fees and always uses Y per X.
-- **A6:** Virtual reserves cannot be transferred. Quotes reaching or exceeding the
-  real output reserve raise `InsufficientLiquidity`; partial fills are not modeled.
-- **A7:** Bid/ask are pre-fee marginal prices; the requested signature has no fee argument.
-- **A8:** The official cases omit `fee_bps`, so the canonical table uses zero fees.
-  A separate 5 bps table illustrates fee handling.
-- **A9:** Fees are accounted for separately from pricing reserves. This is a stateless
-  quote model: each call rebuilds virtual reserves from its supplied state and does
-  not persist one invariant across trades. Splitting a trade can therefore change total
-  output. Under the same fee, fixed `P` and `alpha`, same direction, reserves updated by
-  the net (post-fee) input after each fill, and both executions fillable, splitting never
-  increases total output (ignoring floating-point rounding). Total output is strictly
-  lower only when `alpha > 1` and at least two sub-trades each carry positive curve
-  input; otherwise it is identical. For example, Case E (20,000 USDT) split as
-  12,620 + 7,380 or 10,000 + 10,000 returns the same 30.678809 WBNB as the single trade,
-  because the curve portion still executes in one piece, while 15,000 + 5,000 returns
-  30.669075 WBNB. Case A split into 2 x 250 USDT yields about 6.14e-5 WBNB less than a
-  single 500 USDT trade. This is covered by a regression test.
-- **A10:** All numeric inputs must be finite. Reserves, `P`, and input amount must
-  be positive; `alpha >= 1`; `0 <= fee_bps < 10000`; direction must be a boolean.
-  Values use human token units and Python floats. Token decimals, integer rounding,
-  and exact arithmetic at extreme numeric scales are outside this exercise's scope.
+Identifiers match the implementation's docstring.
 
-## Test results
+- **A1-A2:** Balance means $Px=y$; only rebalancing input receives the flat price $P$.
+- **A3:** Rebuild virtual reserves after the stable phase; a crossing trade enters the
+  curve at $P$. The assignment leaves this transition unspecified.
+- **A4-A5:** Deduct input fees once; effective price includes fees and uses Y/X.
+- **A6-A7:** Reject output reaching the real reserve; no partial fills. Bid/ask exclude fees.
+- **A8:** Official examples use zero fees because no rate is given; 5 bps is illustrative.
+- **A9:** Fees are separate from pricing reserves. Calls rebuild virtual reserves and
+  persist no state. For fillable same-direction splits with fixed $P$, $\alpha$, and
+  fee rate, update reserves using net input: splitting cannot increase output.
+  Output is strictly lower only if $\alpha>1$ and at least two pieces have positive
+  curve input; otherwise equal. This statement ignores floating-point rounding.
+- **A10:** Finite numeric inputs; $x,y,P,a>0$, $\alpha\ge1$, $0\le b<10^4$;
+  boolean direction. Human token units and floats; on-chain rounding is out of scope.
 
-See [results.md](results.md) for the generated A-D tables, the 5 bps
-examples, and case E: 20,000 USDT against case C reserves, split into 12,620 USDT
-stable input and 7,380 USDT curve input.
+## Results and checks
 
-Two observations from the tables are worth calling out:
+- **B:** Ask is 937.5 versus oracle 627, as implied by the reserve ratio. Production
+  controls could bound deviation, suspend quotes, or rebalance pool inventory.
+  Binance hedging alone does not change pool reserves.
+- **A vs D:** Effective depth is 2% vs 5% above $\alpha=1$ (D is 2.94% deeper than A).
+  Output rises by 0.000175 WBNB; slippage falls from 78.18 to 75.95 bps.
+- **Splitting:** A split into two 250 USDT trades loses about 0.0000614 WBNB.
+  E split at or before its stable boundary has unchanged output; splitting
+  15,000 + 5,000 USDT lowers output from 30.678809 to 30.669075 WBNB (zero fees).
 
-- **Case B is extreme by construction.** The Y-heavy pool has `cpPrice = 75,000 / 80 = 937.5`
-  against an oracle of 627, so a 500 USDT buy fills at ~943.6, roughly 50% above market.
-  This is what the literal specification produces, not a bug. In production it argues for
-  safeguards outside the pricing function itself: an oracle deviation bound on `cpPrice`,
-  quoting suspension when the pool is this imbalanced, or operator-driven pool inventory
-  rebalancing (moving tokens into or out of the on-chain pool) to keep reserves near 50/50.
-  Note that CEX delta hedging on Binance is a separate function: it changes the operator's
-  net exposure but does not change `reserve_x` or `reserve_y`, so it cannot fix `cpPrice`.
-- **Alpha has a small effect at this trade size.** Cases A and D differ only in `alpha`
-  (1.02 vs 1.05). Relative to `alpha = 1`, the effective reserves are 2% and 5% deeper;
-  relative to each other, D is `1.05 / 1.02 - 1 = 2.94%` deeper than A. For a 500 USDT
-  trade against a Y-side reserve of 62,700 USDT, this raises output by 0.000175 WBNB and
-  lowers slippage versus `P` from 78.18 bps (A) to 75.95 bps (D).
+[Tests](test_pricing.py) cover both directions, fees, invariants, boundary continuity,
+input validation, reserve exhaustion, and splitting. [Tables](results.md) contain A-E.
 
-[test_pricing.py](test_pricing.py) checks the official numerical
-results, input rejection (including NaN, infinity, and 100% fees), fee accounting,
-both trade directions, curve invariants, marginal price limits, continuity at the
-stable/curve boundary, diagnostic reserve ratios, and real-reserve exhaustion.
-The curve tests cover `alpha = 1`, `1.02`, and `1.05`, with zero and nonzero fees.
+Regenerate tables from the repository root:
 
-From the repository root, regenerate the example output as UTF-8:
-
-```
+```sh
 python -c "from pathlib import Path; from part1_pricing.pricing import main; Path('part1_pricing/results.md').write_text(main(), encoding='utf-8')"
 ```
