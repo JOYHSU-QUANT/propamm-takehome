@@ -296,12 +296,12 @@ def _pool_state(rx: float, ry: float, P: float) -> str:
     return "X-heavy" if gap > 0 else "Y-heavy"
 
 
-def _run_table(cases: dict, fee_bps: float, title: str) -> list[str]:
+def _run_table(cases: dict, fee_bps: float) -> list[str]:
     lines = [
-        f"### {title} (fee_bps = {fee_bps}, all Y -> X)",
+        f"#### fee_bps = {fee_bps:g}",
         "",
-        "| Case | Pool | cpPrice | bid | ask | stable_in | curve_in | amount_out (WBNB) | eff. price | fee (USDT) |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| Case | Pool | alpha | cpPrice | bid | ask | stable_capacity | stable_in | curve_in | amount_out (WBNB) | eff. price | fee (USDT) |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for name, c in cases.items():
         bid, ask = get_bid_ask(c["reserve_x"], c["reserve_y"], c["price_P"], c["alpha"])
@@ -310,9 +310,10 @@ def _run_table(cases: dict, fee_bps: float, title: str) -> list[str]:
             fee_bps, c["amount_in"], swap_x_to_y=False,
         )
         state = _pool_state(c["reserve_x"], c["reserve_y"], c["price_P"])
+        capacity = _stable_capacity(c["reserve_x"], c["reserve_y"], c["price_P"], False)
         lines.append(
-            f"| {name} | {state} | {bd.cp_price_before:.2f} | {bid:.2f} | {ask:.2f} "
-            f"| {bd.stable_in:,.2f} | {bd.curve_in:,.2f} | {out:.6f} | {eff:.4f} | {fee:.4f} |"
+            f"| {name} | {state} | {c['alpha']:.2f} | {bd.cp_price_before:.2f} | {bid:.2f} | {ask:.2f} "
+            f"| {capacity:,.2f} | {bd.stable_in:,.2f} | {bd.curve_in:,.2f} | {out:.6f} | {eff:.4f} | {fee:.4f} |"
         )
     lines.append("")
     return lines
@@ -366,11 +367,17 @@ def _sanity_checks() -> list[str]:
 
 
 def main() -> str:
-    lines = ["# Part 1 - Test Results", ""]
-    lines += _run_table(OFFICIAL_CASES, 0, "Official cases")
-    lines += _run_table(OFFICIAL_CASES, 5, "Official cases with an illustrative fee")
-    lines += _run_table(EXTRA_CASES, 0, "Extra case E: stable -> curve crossing")
-    lines.append("### Sanity checks")
+    lines = [
+        "## Results", "",
+        "All swaps are Y -> X at oracle P = 627 USDT/WBNB. Prices are in USDT/WBNB;",
+        "stable_capacity, stable_in, and curve_in are in USDT. fee is the charged amount, not the fee rate.",
+        "", "### Official cases A-D", "", "Gross input: 500 USDT per case.", "",
+    ]
+    lines += _run_table(OFFICIAL_CASES, 0)
+    lines += _run_table(OFFICIAL_CASES, 5)
+    lines += ["### Crossing case E", "", "Case C reserves; gross input: 20,000 USDT.", ""]
+    lines += _run_table(EXTRA_CASES, 0)
+    lines.append("### Sanity checks / observations")
     lines.append("")
     for note in _sanity_checks():
         lines.append(f"- PASS: {note}")
@@ -379,4 +386,23 @@ def main() -> str:
 
 
 if __name__ == "__main__":
-    print(main())
+    from argparse import ArgumentParser
+    from pathlib import Path
+
+    parser = ArgumentParser(description="Print pricing results or refresh them in MODEL.md.")
+    parser.add_argument("--write-results", action="store_true", help="Refresh the generated results in MODEL.md")
+    args = parser.parse_args()
+    results = main()
+    if args.write_results:
+        model_path = Path(__file__).with_name("MODEL.md")
+        document = model_path.read_text(encoding="utf-8")
+        start = "<!-- BEGIN GENERATED RESULTS -->"
+        end = "<!-- END GENERATED RESULTS -->"
+        if document.count(start) != 1 or document.count(end) != 1 or document.index(start) >= document.index(end):
+            raise ValueError("MODEL.md must contain exactly one ordered pair of result markers")
+        before, remainder = document.split(start, 1)
+        _, after = remainder.split(end, 1)
+        model_path.write_text(before + start + "\n\n" + results.rstrip() + "\n\n" + end + after, encoding="utf-8")
+        print(f"Updated {model_path}")
+    else:
+        print(results)
