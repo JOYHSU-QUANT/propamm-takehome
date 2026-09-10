@@ -135,61 +135,70 @@ class PricingTests(unittest.TestCase):
         self.assertFalse(math.isclose(bd.reserve_ratio_after, curve_endpoint, rel_tol=1e-6))
 
     def test_splitting_never_improves_output(self):
-        # A9: same direction, fixed P and alpha, zero fee, reserves updated after
-        # each fill. Splitting never increases output; it is strictly lower only
-        # when alpha > 1 and at least two pieces each carry positive curve input.
-        def split(x, y, alpha, pieces, direction):
+        # A9: same fee, fixed P and alpha, same direction, reserves updated by
+        # the net (post-fee) input after each fill. Splitting never increases
+        # output; it is strictly lower only when alpha > 1 and at least two
+        # pieces each carry positive curve input. Checked at 0, 5 and 30 bps.
+        FEES = (0, 5, 30)
+
+        def split(x, y, alpha, fee_bps, pieces, direction):
             out_sum = 0.0
             for amt in pieces:
-                out, _, _ = get_quote(x, y, 627, alpha, 0, amt, direction)
+                out, _, fee = get_quote(x, y, 627, alpha, fee_bps, amt, direction)
                 out_sum += out
-                x, y = (x + amt, y - out) if direction else (x - out, y + amt)
+                net = amt - fee
+                x, y = (x + net, y - out) if direction else (x - out, y + net)
             return out_sum
 
-        def single(x, y, alpha, total, direction):
-            return get_quote(x, y, 627, alpha, 0, total, direction)[0]
+        def single(x, y, alpha, fee_bps, total, direction):
+            return get_quote(x, y, 627, alpha, fee_bps, total, direction)[0]
 
-        # Pure curve phase, alpha > 1, both directions: strictly worse.
+        # Zero-fee reference number from A9.
         self.assertClose(
-            single(100, 62700, 1.02, 500, False) - split(100, 62700, 1.02, [250, 250], False),
+            single(100, 62700, 1.02, 0, 500, False) - split(100, 62700, 1.02, 0, [250, 250], False),
             6.13772e-5, rel_tol=1e-4)
-        for direction, x, y, total in [(False, 100, 62700, 500), (True, 100, 62700, 1)]:
-            for alpha in (1.02, 1.05):
-                with self.subTest(case="pure-curve", direction=direction, alpha=alpha):
-                    self.assertLess(split(x, y, alpha, [total / 2] * 2, direction),
-                                    single(x, y, alpha, total, direction))
+        self.assertClose(split(120, 50000, 1.02, 0, [15000, 5000], False), 30.66907534168, rel_tol=1e-10)
 
-        # Stable -> curve crossing, both directions. Case E reserves for Y -> X
-        # (stable capacity 12,620 USDT); Case B reserves for X -> Y
-        # (stable capacity (75000 - 80*627) / (2*627) WBNB).
-        cap_x = (75000 - 80 * 627) / (2 * 627)
-        crossing = [
-            (False, 120, 50000, 20000, 12620),
-            (True, 80, 75000, 60, cap_x),
-        ]
-        for direction, x, y, total, cap in crossing:
-            base = single(x, y, 1.02, total, direction)
-            # Split at or before the boundary: curve portion stays in one piece -> identical.
-            for pieces in ([cap, total - cap], [cap / 2, total - cap / 2]):
-                with self.subTest(case="cross-identical", direction=direction, pieces=pieces):
-                    self.assertClose(split(x, y, 1.02, pieces, direction), base, rel_tol=1e-12)
-            # Split after the boundary: two pieces each with curve input -> strictly worse.
-            after = cap + (total - cap) / 2
-            with self.subTest(case="cross-worse", direction=direction):
-                self.assertLess(split(x, y, 1.02, [after, total - after], direction), base)
-        self.assertClose(split(120, 50000, 1.02, [15000, 5000], False), 30.66907534168, rel_tol=1e-10)
+        for fee_bps in FEES:
+            # Pure curve phase, alpha > 1, both directions: strictly worse.
+            for direction, x, y, total in [(False, 100, 62700, 500), (True, 100, 62700, 1)]:
+                for alpha in (1.02, 1.05):
+                    with self.subTest(case="pure-curve", fee=fee_bps, direction=direction, alpha=alpha):
+                        self.assertLess(split(x, y, alpha, fee_bps, [total / 2] * 2, direction),
+                                        single(x, y, alpha, fee_bps, total, direction))
 
-        # alpha = 1 (plain CPMM, path independent), both directions: identical.
-        for direction, x, y, total in [(False, 100, 62700, 500), (True, 100, 62700, 1)]:
-            with self.subTest(case="alpha1", direction=direction):
-                self.assertClose(split(x, y, 1, [total / 2] * 2, direction),
-                                 single(x, y, 1, total, direction), rel_tol=1e-12)
+            # Stable -> curve crossing, both directions. Case E reserves for Y -> X
+            # (net stable capacity 12,620 USDT); Case B reserves for X -> Y
+            # (net stable capacity (75000 - 80*627) / (2*627) WBNB). The boundary
+            # in gross terms is net capacity / (1 - fee).
+            net_cap_x = (75000 - 80 * 627) / (2 * 627)
+            crossing = [
+                (False, 120, 50000, 20000, 12620),
+                (True, 80, 75000, 60, net_cap_x),
+            ]
+            for direction, x, y, total, net_cap in crossing:
+                cap = net_cap / (1 - fee_bps / 10000)
+                base = single(x, y, 1.02, fee_bps, total, direction)
+                # Split at or before the boundary: curve portion stays in one piece -> identical.
+                for pieces in ([cap, total - cap], [cap / 2, total - cap / 2]):
+                    with self.subTest(case="cross-identical", fee=fee_bps, direction=direction, pieces=pieces):
+                        self.assertClose(split(x, y, 1.02, fee_bps, pieces, direction), base, rel_tol=1e-12)
+                # Split after the boundary: two pieces each with curve input -> strictly worse.
+                after = cap + (total - cap) / 2
+                with self.subTest(case="cross-worse", fee=fee_bps, direction=direction):
+                    self.assertLess(split(x, y, 1.02, fee_bps, [after, total - after], direction), base)
 
-        # Entirely stable phase (flat price P), both directions: identical.
-        for direction, x, y, total in [(False, 120, 50000, 500), (True, 80, 75000, 1)]:
-            with self.subTest(case="stable-only", direction=direction):
-                self.assertClose(split(x, y, 1.02, [total / 2] * 2, direction),
-                                 single(x, y, 1.02, total, direction), rel_tol=1e-12)
+            # alpha = 1 (plain CPMM, path independent), both directions: identical.
+            for direction, x, y, total in [(False, 100, 62700, 500), (True, 100, 62700, 1)]:
+                with self.subTest(case="alpha1", fee=fee_bps, direction=direction):
+                    self.assertClose(split(x, y, 1, fee_bps, [total / 2] * 2, direction),
+                                     single(x, y, 1, fee_bps, total, direction), rel_tol=1e-12)
+
+            # Entirely stable phase (flat price P), both directions: identical.
+            for direction, x, y, total in [(False, 120, 50000, 500), (True, 80, 75000, 1)]:
+                with self.subTest(case="stable-only", fee=fee_bps, direction=direction):
+                    self.assertClose(split(x, y, 1.02, fee_bps, [total / 2] * 2, direction),
+                                     single(x, y, 1.02, fee_bps, total, direction), rel_tol=1e-12)
 
     def test_tiny_trades_approach_bid_ask(self):
         for x, y in [(100, 62700), (80, 75000), (120, 50000)]:

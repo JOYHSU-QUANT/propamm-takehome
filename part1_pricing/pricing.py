@@ -47,9 +47,9 @@ A8. The test table does not specify fee_bps. The canonical results are
 A9. Fees are accounted for separately and excluded from the simulated pricing
     reserves. Each call rebuilds virtual reserves; no invariant is persisted
     between calls, so splitting a trade can change its total output. Under
-    the same fee, fixed P and alpha, same direction, reserves updated after
-    each fill, and both executions fillable, splitting never increases total
-    output (ignoring floating-point rounding). Total output is strictly lower
+    the same fee, fixed P and alpha, same direction, reserves updated by the
+    net (post-fee) input after each fill, and both executions fillable,
+    splitting never increases total output (ignoring floating-point rounding). Total output is strictly lower
     only when alpha > 1 and at least two sub-trades each carry positive curve
     input; otherwise it is identical. In particular, a stable -> curve
     crossing trade split exactly at the boundary, or anywhere before it,
