@@ -23,8 +23,8 @@ Units
 - X = base token (WBNB), Y = quote token (USDT).
 - price_P, cpPrice, bid, ask and effective_price are all expressed in Y per X.
 
-Assumptions (also listed in README)
------------------------------------
+Assumptions (also listed in MODEL.md)
+-------------------------------------
 A1. "50/50" is measured in oracle value: reserve_x * P vs reserve_y.
 A2. A trade only enters the stable phase if it moves the pool toward 50/50.
     It executes at P until the pool is exactly balanced; the remainder goes
