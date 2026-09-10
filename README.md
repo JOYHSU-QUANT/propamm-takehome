@@ -70,14 +70,15 @@ of the curve used for this trade.
 - **A9:** Fees are accounted for separately from pricing reserves. This is a stateless
   quote model: each call rebuilds virtual reserves from its supplied state and does
   not persist one invariant across trades. Splitting a trade can therefore change total
-  output. Under the same fee, fixed `P` and `alpha`, same direction, reserves updated by the
-  net (post-fee) input after each fill, and both executions fillable, splitting never
-  increases total output (ignoring floating-point rounding). Total output is strictly lower only when `alpha > 1` and at
-  least two sub-trades each carry positive curve input; otherwise it is identical. For
-  example, Case E (20,000 USDT) split as 12,620 + 7,380 or 10,000 + 10,000 returns the same
-  30.678809 WBNB as the single trade, because the curve portion still executes in one piece,
-  while 15,000 + 5,000 returns 30.669075 WBNB. Case A split into 2 x 250 USDT yields about
-  6.14e-5 WBNB less than a single 500 USDT trade. This is covered by a regression test.
+  output. Under the same fee, fixed `P` and `alpha`, same direction, reserves updated by
+  the net (post-fee) input after each fill, and both executions fillable, splitting never
+  increases total output (ignoring floating-point rounding). Total output is strictly
+  lower only when `alpha > 1` and at least two sub-trades each carry positive curve
+  input; otherwise it is identical. For example, Case E (20,000 USDT) split as
+  12,620 + 7,380 or 10,000 + 10,000 returns the same 30.678809 WBNB as the single trade,
+  because the curve portion still executes in one piece, while 15,000 + 5,000 returns
+  30.669075 WBNB. Case A split into 2 x 250 USDT yields about 6.14e-5 WBNB less than a
+  single 500 USDT trade. This is covered by a regression test.
 - **A10:** All numeric inputs must be finite. Reserves, `P`, and input amount must
   be positive; `alpha >= 1`; `0 <= fee_bps < 10000`; direction must be a boolean.
   Values use human token units and Python floats. Token decimals, integer rounding,

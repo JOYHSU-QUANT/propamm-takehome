@@ -49,13 +49,14 @@ A9. Fees are accounted for separately and excluded from the simulated pricing
     between calls, so splitting a trade can change its total output. Under
     the same fee, fixed P and alpha, same direction, reserves updated by the
     net (post-fee) input after each fill, and both executions fillable,
-    splitting never increases total output (ignoring floating-point rounding). Total output is strictly lower
-    only when alpha > 1 and at least two sub-trades each carry positive curve
-    input; otherwise it is identical. In particular, a stable -> curve
-    crossing trade split exactly at the boundary, or anywhere before it,
-    yields the same output as the single trade, because the curve portion is
-    still executed in one piece. Example: Case A split into 2 x 250 USDT
-    yields ~6.14e-5 WBNB less than one 500 USDT trade.
+    splitting never increases total output (ignoring floating-point
+    rounding). Total output is strictly lower only when alpha > 1 and at
+    least two sub-trades each carry positive curve input; otherwise it is
+    identical. In particular, a stable -> curve crossing trade split exactly
+    at the boundary, or anywhere before it, yields the same output as the
+    single trade, because the curve portion is still executed in one piece.
+    Example: Case A split into 2 x 250 USDT yields ~6.14e-5 WBNB less than
+    one 500 USDT trade.
 A10. Inputs must be finite, reserves/P/amount_in positive, alpha >= 1, and
      0 <= fee_bps < 10000. Calculations use floats in human token units;
      on-chain integer rounding is outside the scope of this model.
