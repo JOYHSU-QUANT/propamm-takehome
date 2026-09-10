@@ -235,9 +235,9 @@ def _run_table(cases: dict, fee_bps: float) -> list[str]:
     lines = [
         f"#### fee_bps = {fee_bps:g}",
         "",
-        "| Case | Direction | Pool | alpha | cpPrice | bid | ask | stable_capacity "
-        "| stable_in | curve_in | amount_in | amount_out | eff. price | fee |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| Case | Pool | alpha | cpPrice | bid | ask | stable_capacity "
+        "| stable_in | curve_in | amount_out | eff. price | fee |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for name, c in cases.items():
         d = c["swap_x_to_y"]
@@ -248,11 +248,12 @@ def _run_table(cases: dict, fee_bps: float) -> list[str]:
         )
         state = _pool_state(c["reserve_x"], c["reserve_y"], c["price_P"])
         capacity = _stable_capacity(c["reserve_x"], c["reserve_y"], c["price_P"], d)
-        direction = "X->Y (WBNB in)" if d else "Y->X (USDT in)"
+        input_decimals = 4 if d else 2
         lines.append(
-            f"| {name} | {direction} | {state} | {c['alpha']:.2f} | {bd.cp_price_before:.2f} "
-            f"| {bid:.2f} | {ask:.2f} | {capacity:,.4f} | {bd.stable_in:,.4f} | {bd.curve_in:,.4f} "
-            f"| {c['amount_in']:,.4f} | {out:,.6f} | {eff:.4f} | {fee:.4f} |"
+            f"| {name} | {state} | {c['alpha']:.2f} | {bd.cp_price_before:.2f} "
+            f"| {bid:.2f} | {ask:.2f} | {capacity:,.{input_decimals}f} "
+            f"| {bd.stable_in:,.{input_decimals}f} | {bd.curve_in:,.{input_decimals}f} "
+            f"| {out:,.6f} | {eff:.4f} | {fee:.4f} |"
         )
     lines.append("")
     return lines
@@ -267,24 +268,24 @@ def _sanity_checks() -> list[str]:
     _, eff, _, bd = get_quote_detailed(120, 50_000, P, 1.02, 0, 500, False)
     assert abs(eff - P) < 1e-9, eff
     assert bd.curve_in == 0
-    notes.append("Case C executes entirely at P (eff. price == 627, curve_in == 0)")
+    notes.append("C: entirely Stable at P = 627.")
 
     # Case A vs D: larger alpha => deeper curve => slightly more output.
     out_a, _, _ = get_quote(100, 62_700, P, 1.02, 0, 500, False)
     out_d, _, _ = get_quote(100, 62_700, P, 1.05, 0, 500, False)
     assert out_d > out_a
-    notes.append("Case D (alpha 1.05) returns more WBNB than Case A (alpha 1.02)")
+    notes.append("D returns more WBNB than A as alpha increases.")
 
     # Case E: stable capacity is exactly (rx*P - ry)/2 = 12,620.
     _, _, _, bd_e = get_quote_detailed(120, 50_000, P, 1.02, 0, 20_000, False)
     assert abs(bd_e.stable_in - 12_620) < 1e-9, bd_e.stable_in
     assert bd_e.curve_in > 0
-    notes.append("Case E splits: 12,620 USDT stable, 7,380 USDT curve")
+    notes.append("E: 12,620 USDT Stable + 7,380 USDT Curve.")
 
     # Case F: X->Y on a Y-heavy pool is fully stable at P.
     out, eff, _, _ = get_quote_detailed(80, 75_000, P, 1.02, 0, 1.0, True)
     assert abs(eff - P) < 1e-9 and abs(out - P) < 1e-9
-    notes.append("Case F (X->Y on Y-heavy Case B reserves) executes at P")
+    notes.append("F: entirely Stable at P = 627.")
 
     # Effective price never beats the marginal bid/ask in any case.
     for c in ALL_CASES.values():
@@ -294,7 +295,7 @@ def _sanity_checks() -> list[str]:
             0, c["amount_in"], c["swap_x_to_y"],
         )
         assert eff <= bid + 1e-9 if c["swap_x_to_y"] else eff >= ask - 1e-9
-    notes.append("Effective price never beats the marginal bid (X->Y) or ask (Y->X) in any case")
+    notes.append("A-G: effective prices respect marginal bid/ask bounds.")
 
     # No-arbitrage against the oracle: bid <= P <= ask, so a zero-fee round
     # trip always returns less than it started with.
@@ -304,14 +305,14 @@ def _sanity_checks() -> list[str]:
         ox, _, _ = get_quote(x, y, P, 1.02, 0, 500, False)
         back, _, _ = get_quote(x - ox, y + 500, P, 1.02, 0, ox, True)
         assert back < 500, back
-    notes.append("bid <= P <= ask; a zero-fee round trip 500 USDT -> WBNB -> USDT never profits")
+    notes.append("A-C reserves: tested zero-fee round trips return less than 500 USDT.")
 
     # Rejection: a trade that would drain the real reserve is rejected.
     try:
         get_quote(100, 62_700, P, 1.02, 0, 10_000_000, False)
         raise AssertionError("expected InsufficientLiquidity")
     except InsufficientLiquidity:
-        notes.append("Oversized trade raises InsufficientLiquidity instead of clamping")
+        notes.append("Oversized input raises InsufficientLiquidity.")
 
     return notes
 
@@ -319,21 +320,17 @@ def _sanity_checks() -> list[str]:
 def main() -> str:
     lines = [
         "## Results", "",
-        "Oracle P = 627 USDT/WBNB in every case. Prices (cpPrice, bid, ask, eff. price) are in USDT/WBNB.",
-        "stable_capacity, stable_in, curve_in, amount_in and fee are in the input token;",
-        "amount_out is in the output token. Y->X means the trader pays USDT and receives WBNB;",
-        "X->Y means the trader pays WBNB and receives USDT. fee is the charged amount, not the rate.",
-        "", "### Official cases A-D", "", "Y->X, gross input 500 USDT per case.", "",
+        "P = 627 USDT/WBNB; all prices use USDT/WBNB. Capacity, phase inputs, and fee",
+        "use the input token; amount_out uses the output token. Fee rate appears only in headings.",
+        "", "### Official cases A-D", "", "USDT -> WBNB; gross input: 500 USDT per case.", "",
     ]
     lines += _run_table(OFFICIAL_CASES, 0)
     lines += _run_table(OFFICIAL_CASES, 5)
-    lines += ["### Crossing case E", "", "Case C reserves, Y->X, gross input 20,000 USDT.", ""]
+    lines += ["### Crossing case E", "", "Case C reserves; USDT -> WBNB; gross input: 20,000 USDT.", ""]
     lines += _run_table(CROSSING_CASES, 0)
     lines += [
         "### Reverse-direction cases F-G", "",
-        "X->Y, gross input 1 WBNB. F uses Case B reserves (Y-heavy), so selling WBNB rebalances",
-        "the pool and fills entirely at P. G uses Case A reserves (balanced), so it goes straight",
-        "to the curve and fills below P.", "",
+        "WBNB -> USDT; gross input: 1 WBNB. F uses Case B reserves; G uses Case A reserves.", "",
     ]
     lines += _run_table(REVERSE_CASES, 0)
     lines.append("### Sanity checks / observations")
