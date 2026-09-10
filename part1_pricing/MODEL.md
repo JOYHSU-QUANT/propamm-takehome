@@ -54,10 +54,22 @@ $$
 f=a\frac{b}{10^4},\qquad q=a-f,\qquad s=\min(q,c),\qquad r=q-s.
 $$
 
+These equations cover all three paths in the flowchart:
+
+| Execution path | Condition | Stable input $s$ | Curve input $r$ |
+|---|---|---|---|
+| Curve only | $c=0$ | $0$ | $q$ |
+| Stable only | $0<q\le c$ | $q$ | $0$ |
+| Stable then Curve | $q>c>0$ | $c$ | $q-c$ |
+
+For Curve only, $o_s=0$ and the curve uses the original reserves ($x_s=x$, $y_s=y$).
+For Stable only, $o_c=0$. For the mixed path, the curve uses reserves updated by
+the stable phase. All paths return total output $o=o_s+o_c$.
+
 `net_in` comes from the trader's input and fee; `capacity` comes from the pool's
 reserves, oracle price, and trade direction. For example, in case E with zero fees,
 `net_in = 20,000` USDT and `capacity = 12,620` USDT: 12,620 goes to Stable and
-the remaining 7,380 goes to Curve. If `net_in <= capacity`, all input goes to Stable.
+the remaining 7,380 goes to Curve.
 
 **Curve construction after the stable phase**
 
