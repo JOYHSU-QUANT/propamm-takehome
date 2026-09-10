@@ -28,18 +28,18 @@ Invalid inputs, insufficient real liquidity, or invalid computed values reject t
 
 A1-A10 match the implementation's inline references.
 
-| ID | Assumption |
-|---|---|
-| A1 | Balance means equal oracle value: $Px=y$. |
-| A2 | Only rebalancing input fills at $P$, up to balance. |
-| A3 | Rebuild virtual reserves after Stable; crossing trades enter Curve at $P$. This transition is a modeling choice. |
-| A4 | Deduct the fee once from input; price only the net amount. |
-| A5 | Effective price includes fees and always uses Y per X. |
-| A6 | Reject output reaching the real reserve. Virtual liquidity is not transferable; no clamping or partial fills. |
-| A7 | Bid/ask are pre-fee marginal prices. |
-| A8 | Official cases use zero fees because none are specified; 5 bps is illustrative. |
-| A9 | Quotes persist no state and rebuild virtual reserves per call. Fees stay outside pricing reserves. |
-| A10 | Finite values; $x,y,P,a>0$, $\alpha\ge1$, $0\le b<10^4$; boolean direction. Floats in human token units; on-chain rounding is out of scope. |
+| ID | Assumption | Why |
+|---|---|---|
+| A1 | Balance means equal oracle value: $Px=y$. | The stable phase exists to cut inventory risk, and that risk is denominated in value, not token units. |
+| A2 | Only rebalancing input fills at $P$, up to balance. | Flow that worsens the imbalance should pay the curve's inventory-dependent price, not the flat one. |
+| A3 | Rebuild virtual reserves after Stable; crossing trades enter Curve at $P$. This transition is a modeling choice. | The pool is balanced at the boundary, so the curve starts exactly at $P$ and pricing is continuous. The assignment leaves the transition unspecified. |
+| A4 | Deduct the fee once from input; price only the net amount. | Standard AMM convention; keeps fee accounting independent of the two pricing phases. |
+| A5 | Effective price includes fees and always uses Y per X. | The all-in price is what the trader experiences; a fixed unit makes both directions directly comparable. |
+| A6 | Reject output reaching the real reserve. Virtual liquidity is not transferable; no clamping or partial fills. | Clamping would silently change the execution price. Virtual reserves shape depth but cannot be withdrawn. |
+| A7 | Bid/ask are pre-fee marginal prices. | The requested `get_bid_ask` signature has no fee argument; fees and finite-size slippage belong to `get_quote`. |
+| A8 | Official cases use zero fees because none are specified; 5 bps is illustrative. | Zero fee isolates the pricing model. The 5 bps *spread* in Part 2 is not a fee and is not assumed to be one. |
+| A9 | Quotes persist no state and rebuild virtual reserves per call. Fees stay outside pricing reserves. | Matches the function signatures, which take reserves as input. Consequence: splitting a same-direction trade never increases output (strictly lower only if $\alpha>1$ and two or more pieces each carry curve input); tested at 0, 5 and 30 bps. |
+| A10 | Finite values; $x,y,P,a>0$, $\alpha\ge1$, $0\le b<10^4$; boolean direction. Floats in human token units; on-chain rounding is out of scope. | Keeps the exercise focused on pricing logic rather than fixed-point arithmetic. |
 
 ## Pricing equations
 
@@ -203,10 +203,14 @@ Alpha changes depth, not the starting price. `get_quote_detailed` also reports
 phase amounts and `reserve_ratio_after`: the final real Y/X ratio excluding fees,
 not the endpoint price of the fixed-virtual-reserve curve.
 
-With fixed $P$ equal to the external market price, $\mathrm{bid}\le P\le\mathrm{ask}$
-and adverse slippage prevent profitable pool-to-market arbitrage within this model.
-This assumes valid fills and excludes oracle changes and implementation faults. A stale $P$ removes this protection;
-[Part 3](../part3_arb_defence/DEFENCE.md) analyses that case.
+**No arbitrage against the oracle.** With $P$ equal to the external market price,
+$\mathrm{bid}\le P\le\mathrm{ask}$ means the pool never quotes a trader better than $P$
+in either direction, and a finite trade only adds slippage on top. A zero-fee round
+trip therefore always loses: 500 USDT bought and immediately sold back returns
+496.0 to 496.2 USDT on Case A reserves and about 332 and 336 USDT on B and C;
+1 WBNB round-tripped returns 0.990, 0.677 and 0.659 WBNB (`test_round_trip_never_profits`).
+This assumes valid fills and excludes implementation faults. A stale $P$ removes the
+protection; [Part 3](../part3_arb_defence/DEFENCE.md) analyses that case.
 
 <!-- BEGIN GENERATED RESULTS -->
 
