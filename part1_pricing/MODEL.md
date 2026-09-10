@@ -109,7 +109,24 @@ Each trade reduces one side's oracle value and increases the other by the same
 amount, closing the value gap by twice the traded value. Capacity takes the positive
 part of these solutions; a non-rebalancing direction has zero stable capacity.
 
-For the curve output, $(X-o_c)(Y+r)=XY$ gives $o_c=Xr/(Y+r)$ for Y to X.
+**Deriving curve output**
+
+Virtual reserves stay fixed, so input $r$ increases the input-side effective
+reserve by $r$, while output $o_c$ reduces the other side by $o_c$.
+Keeping their product equal to $XY$ gives:
+
+$$
+\begin{aligned}
+Y\to X:\quad &(X-o_c)(Y+r)=XY
+&&\Longrightarrow\quad o_c=X-\frac{XY}{Y+r}=\frac{Xr}{Y+r},\\
+X\to Y:\quad &(X+r)(Y-o_c)=XY
+&&\Longrightarrow\quad o_c=Y-\frac{XY}{X+r}=\frac{Yr}{X+r}.
+\end{aligned}
+$$
+
+Here $r$ is the remaining net input after the stable phase; if $r=0$, then $o_c=0$.
+The implementation uses the final fractional forms to avoid subtracting nearly
+equal values, and separately checks that real reserves can pay the total output.
 
 At the start of a quote, the pre-fee marginal prices are:
 
