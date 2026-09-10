@@ -91,9 +91,25 @@ $$
 | Curve output $o_c$ | $\frac{Yr}{X+r}$ | $\frac{Xr}{Y+r}$ |
 | All-in effective price (Y/X) | $o/a$ | $a/o$ |
 
-For example, Y to X reaches balance when $P(x-s/P)=y+s$, giving
-$c=(Px-y)/2$ when positive. The curve equation $(X-o_c)(Y+r)=XY$
-gives $o_c=Xr/(Y+r)$.
+**Why stable capacity divides by two**
+
+At capacity, the post-trade reserves have equal oracle value. For Y to X,
+input $s$ adds $s$ Y and removes $s/P$ X; for X to Y, it adds $s$ X and removes $Ps$ Y:
+
+$$
+\begin{aligned}
+Y\to X:\quad & P\left(x-\frac{s}{P}\right)=y+s
+&&\Longrightarrow\quad s=\frac{Px-y}{2},\\
+X\to Y:\quad & P(x+s)=y-Ps
+&&\Longrightarrow\quad s=\frac{y-Px}{2P}.
+\end{aligned}
+$$
+
+Each trade reduces one side's oracle value and increases the other by the same
+amount, closing the value gap by twice the traded value. Capacity takes the positive
+part of these solutions; a non-rebalancing direction has zero stable capacity.
+
+For the curve output, $(X-o_c)(Y+r)=XY$ gives $o_c=Xr/(Y+r)$ for Y to X.
 
 At the start of a quote, the pre-fee marginal prices are:
 
