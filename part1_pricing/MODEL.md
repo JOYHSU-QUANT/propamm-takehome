@@ -27,21 +27,46 @@ Invalid inputs, insufficient real liquidity, or invalid computed values reject t
 
 ## Model assumptions
 
-Identifiers match the implementation's docstring.
+Identifiers match the inline comments in the implementation.
 
-- **A1-A2:** Balance means $Px=y$; only rebalancing input receives the flat price $P$.
-- **A3:** Rebuild virtual reserves after the stable phase; a crossing trade enters the
-  curve at $P$. The assignment leaves this transition unspecified.
-- **A4-A5:** Deduct input fees once; effective price includes fees and uses Y/X.
-- **A6-A7:** Reject output reaching the real reserve; no partial fills. Bid/ask exclude fees.
-- **A8:** Official examples use zero fees because no rate is given; 5 bps is illustrative.
-- **A9:** Fees are separate from pricing reserves. Calls rebuild virtual reserves and
-  persist no state. For fillable same-direction splits with fixed $P$, $\alpha$, and
-  fee rate, update reserves using net input: splitting cannot increase output.
-  Output is strictly lower only if $\alpha>1$ and at least two pieces have positive
-  curve input; otherwise equal. This statement ignores floating-point rounding.
-- **A10:** Finite numeric inputs; $x,y,P,a>0$, $\alpha\ge1$, $0\le b<10^4$;
-  boolean direction. Human token units and floats; on-chain rounding is out of scope.
+- **A1. Balance is measured in oracle value.** "50/50" means $Px=y$, not equal token
+  counts. The stable phase exists to reduce the pool's inventory risk, and that risk
+  is denominated in value, not units.
+- **A2. Only rebalancing flow gets the flat price.** A trade enters the stable phase
+  only if it moves the pool toward $Px=y$, and fills at $P$ until the pool is exactly
+  balanced. Flow that worsens the imbalance goes straight to the curve.
+- **A3. Virtual reserves are rebuilt after the stable phase.** A trade that crosses
+  from stable to curve enters the curve with the pool at balance, so the curve starts
+  exactly at $P$ and pricing is continuous at the boundary. The assignment does not
+  specify this transition; it is an explicit modeling choice.
+- **A4. Fee is taken once from the input token.** $f=a\cdot b/10^4$; only the net
+  amount $q=a-f$ is priced.
+- **A5. Effective price is all-in.** It is computed from gross input $a$ (fee included),
+  and is always expressed in Y per X regardless of direction, so that quotes in the two
+  directions are directly comparable.
+- **A6. Reject, do not clamp, when output would exhaust the real reserve.** Virtual
+  liquidity changes pricing depth but cannot create transferable tokens. Clamping
+  output to the real reserve would silently change the execution price, so the quote
+  raises `InsufficientLiquidity` instead. Partial fills are not modeled.
+- **A7. Bid/ask are pre-fee marginal prices.** The requested `get_bid_ask` signature
+  has no fee argument, so it reports the marginal price at zero trade size; fees and
+  finite-size slippage appear only in `get_quote`.
+- **A8. Official cases use zero fee.** The test table does not specify `fee_bps`, so
+  the canonical results use 0 to isolate the pricing model. The 5 bps table is
+  illustrative only; the 5 bps *spread* quoted in Part 2 is not a fee and is not
+  assumed to be one.
+- **A9. The quote is stateless and fees stay out of pricing reserves.** Each call
+  rebuilds virtual reserves from the supplied state and persists no invariant across
+  calls, so splitting a trade can change total output. For same-direction splits with
+  fixed $P$, $\alpha$ and fee rate, reserves updated by net input after each fill, and
+  both executions fillable, splitting never increases output (ignoring floating-point
+  rounding). Output is strictly lower only if $\alpha>1$ and at least two pieces each
+  carry positive curve input; otherwise it is equal. Case E split at or before its
+  stable boundary is unchanged; Case A split into 2 x 250 USDT loses about 6.14e-5
+  WBNB. A regression test covers this at 0, 5 and 30 bps.
+- **A10. Inputs are finite floats in human token units.** $x,y,P,a>0$, $\alpha\ge1$,
+  $0\le b<10^4$, boolean direction. Token decimals and on-chain integer rounding are
+  out of scope.
 
 ## Pricing equations
 
@@ -171,52 +196,78 @@ Alpha changes depth, not the starting price. `get_quote_detailed` also reports
 phase amounts and `reserve_ratio_after`: the final real Y/X ratio excluding fees,
 not the endpoint price of the fixed-virtual-reserve curve.
 
+**No arbitrage against the oracle.** By construction $\mathrm{bid}\le P\le\mathrm{ask}$,
+so the pool never quotes a trader a price better than $P$ in either direction, and a
+finite trade only adds slippage on top. A zero-fee round trip therefore always loses:
+500 USDT bought and immediately sold back returns 496.0 to 496.2 USDT on Case A
+reserves and about 332 and 336 USDT on B and C; 1 WBNB round-tripped returns 0.990,
+0.677 and 0.659 WBNB. When the oracle equals the external market, an arbitrageur has
+nothing to extract. The only way to profit against this pool is for $P$ itself to be
+wrong, which is exactly the stale-oracle condition described in Part 3 of the
+assignment.
+
 <!-- BEGIN GENERATED RESULTS -->
 
 ## Results
 
-All swaps are Y -> X at oracle P = 627 USDT/WBNB. Prices are in USDT/WBNB;
-stable_capacity, stable_in, and curve_in are in USDT. fee is the charged amount, not the fee rate.
+Oracle P = 627 USDT/WBNB in every case. Prices (cpPrice, bid, ask, eff. price) are in USDT/WBNB.
+stable_capacity, stable_in, curve_in, amount_in and fee are in the input token;
+amount_out is in the output token. Y->X means the trader pays USDT and receives WBNB;
+X->Y means the trader pays WBNB and receives USDT. fee is the charged amount, not the rate.
 
 ### Official cases A-D
 
-Gross input: 500 USDT per case.
+Y->X, gross input 500 USDT per case.
 
 #### fee_bps = 0
 
-| Case | Pool | alpha | cpPrice | bid | ask | stable_capacity | stable_in | curve_in | amount_out (WBNB) | eff. price | fee (USDT) |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| A | balanced | 1.02 | 627.00 | 627.00 | 627.00 | 0.00 | 0.00 | 500.00 | 0.791262 | 631.9020 | 0.0000 |
-| B | Y-heavy | 1.02 | 937.50 | 627.00 | 937.50 | 0.00 | 0.00 | 500.00 | 0.529870 | 943.6275 | 0.0000 |
-| C | X-heavy | 1.02 | 416.67 | 416.67 | 627.00 | 12,620.00 | 500.00 | 0.00 | 0.797448 | 627.0000 | 0.0000 |
-| D | balanced | 1.05 | 627.00 | 627.00 | 627.00 | 0.00 | 0.00 | 500.00 | 0.791437 | 631.7619 | 0.0000 |
+| Case | Direction | Pool | alpha | cpPrice | bid | ask | stable_capacity | stable_in | curve_in | amount_in | amount_out | eff. price | fee |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| A | Y->X (USDT in) | balanced | 1.02 | 627.00 | 627.00 | 627.00 | 0.0000 | 0.0000 | 500.0000 | 500.0000 | 0.791262 | 631.9020 | 0.0000 |
+| B | Y->X (USDT in) | Y-heavy | 1.02 | 937.50 | 627.00 | 937.50 | 0.0000 | 0.0000 | 500.0000 | 500.0000 | 0.529870 | 943.6275 | 0.0000 |
+| C | Y->X (USDT in) | X-heavy | 1.02 | 416.67 | 416.67 | 627.00 | 12,620.0000 | 500.0000 | 0.0000 | 500.0000 | 0.797448 | 627.0000 | 0.0000 |
+| D | Y->X (USDT in) | balanced | 1.05 | 627.00 | 627.00 | 627.00 | 0.0000 | 0.0000 | 500.0000 | 500.0000 | 0.791437 | 631.7619 | 0.0000 |
 
 #### fee_bps = 5
 
-| Case | Pool | alpha | cpPrice | bid | ask | stable_capacity | stable_in | curve_in | amount_out (WBNB) | eff. price | fee (USDT) |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| A | balanced | 1.02 | 627.00 | 627.00 | 627.00 | 0.00 | 0.00 | 499.75 | 0.790869 | 632.2156 | 0.2500 |
-| B | Y-heavy | 1.02 | 937.50 | 627.00 | 937.50 | 0.00 | 0.00 | 499.75 | 0.529607 | 944.0964 | 0.2500 |
-| C | X-heavy | 1.02 | 416.67 | 416.67 | 627.00 | 12,620.00 | 499.75 | 0.00 | 0.797049 | 627.3137 | 0.2500 |
-| D | balanced | 1.05 | 627.00 | 627.00 | 627.00 | 0.00 | 0.00 | 499.75 | 0.791045 | 632.0756 | 0.2500 |
+| Case | Direction | Pool | alpha | cpPrice | bid | ask | stable_capacity | stable_in | curve_in | amount_in | amount_out | eff. price | fee |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| A | Y->X (USDT in) | balanced | 1.02 | 627.00 | 627.00 | 627.00 | 0.0000 | 0.0000 | 499.7500 | 500.0000 | 0.790869 | 632.2156 | 0.2500 |
+| B | Y->X (USDT in) | Y-heavy | 1.02 | 937.50 | 627.00 | 937.50 | 0.0000 | 0.0000 | 499.7500 | 500.0000 | 0.529607 | 944.0964 | 0.2500 |
+| C | Y->X (USDT in) | X-heavy | 1.02 | 416.67 | 416.67 | 627.00 | 12,620.0000 | 499.7500 | 0.0000 | 500.0000 | 0.797049 | 627.3137 | 0.2500 |
+| D | Y->X (USDT in) | balanced | 1.05 | 627.00 | 627.00 | 627.00 | 0.0000 | 0.0000 | 499.7500 | 500.0000 | 0.791045 | 632.0756 | 0.2500 |
 
 ### Crossing case E
 
-Case C reserves; gross input: 20,000 USDT.
+Case C reserves, Y->X, gross input 20,000 USDT.
 
 #### fee_bps = 0
 
-| Case | Pool | alpha | cpPrice | bid | ask | stable_capacity | stable_in | curve_in | amount_out (WBNB) | eff. price | fee (USDT) |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| E | X-heavy | 1.02 | 416.67 | 416.67 | 627.00 | 12,620.00 | 12,620.00 | 7,380.00 | 30.678809 | 651.9158 | 0.0000 |
+| Case | Direction | Pool | alpha | cpPrice | bid | ask | stable_capacity | stable_in | curve_in | amount_in | amount_out | eff. price | fee |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| E | Y->X (USDT in) | X-heavy | 1.02 | 416.67 | 416.67 | 627.00 | 12,620.0000 | 12,620.0000 | 7,380.0000 | 20,000.0000 | 30.678809 | 651.9158 | 0.0000 |
+
+### Reverse-direction cases F-G
+
+X->Y, gross input 1 WBNB. F uses Case B reserves (Y-heavy), so selling WBNB rebalances
+the pool and fills entirely at P. G uses Case A reserves (balanced), so it goes straight
+to the curve and fills below P.
+
+#### fee_bps = 0
+
+| Case | Direction | Pool | alpha | cpPrice | bid | ask | stable_capacity | stable_in | curve_in | amount_in | amount_out | eff. price | fee |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| F | X->Y (WBNB in) | Y-heavy | 1.02 | 937.50 | 627.00 | 937.50 | 19.8086 | 1.0000 | 0.0000 | 1.0000 | 627.000000 | 627.0000 | 0.0000 |
+| G | X->Y (WBNB in) | balanced | 1.02 | 627.00 | 627.00 | 627.00 | 0.0000 | 0.0000 | 1.0000 | 1.0000 | 620.912621 | 620.9126 | 0.0000 |
 
 ### Sanity checks / observations
 
 - PASS: Case C executes entirely at P (eff. price == 627, curve_in == 0)
 - PASS: Case D (alpha 1.05) returns more WBNB than Case A (alpha 1.02)
 - PASS: Case E splits: 12,620 USDT stable, 7,380 USDT curve
-- PASS: Effective price >= marginal ask for every Y -> X case
-- PASS: X -> Y on Y-heavy pool (Case B reserves) executes at P
+- PASS: Case F (X->Y on Y-heavy Case B reserves) executes at P
+- PASS: Effective price never beats the marginal bid (X->Y) or ask (Y->X) in any case
+- PASS: bid <= P <= ask; a zero-fee round trip 500 USDT -> WBNB -> USDT never profits
 - PASS: Oversized trade raises InsufficientLiquidity instead of clamping
 
 <!-- END GENERATED RESULTS -->
@@ -226,12 +277,16 @@ Case C reserves; gross input: 20,000 USDT.
   Binance hedging alone does not change pool reserves.
 - **A vs D:** Effective depth is 2% vs 5% above $\alpha=1$ (D is 2.94% deeper than A).
   Output rises by 0.000175 WBNB; slippage falls from 78.18 to 75.95 bps.
+- **F vs G:** Same 1 WBNB sold, opposite outcomes. F's Y-heavy pool wants WBNB,
+  so the sale rebalances and fills at $P=627$. G's balanced pool has no stable
+  capacity, so the sale goes to the curve and fills at 620.91, below $P$. Together
+  with A-D this shows both sides of the bid/ask rule.
 - **Splitting:** A split into two 250 USDT trades loses about 0.0000614 WBNB.
   E split at or before its stable boundary has unchanged output; splitting
   15,000 + 5,000 USDT lowers output from 30.678809 to 30.669075 WBNB (zero fees).
 
 [Tests](test_pricing.py) cover both directions, fees, invariants, boundary continuity,
-input validation, reserve exhaustion, and splitting.
+input validation, reserve exhaustion, splitting, and round trips.
 
 Refresh the result tables and sanity checks in this document from the repository root:
 

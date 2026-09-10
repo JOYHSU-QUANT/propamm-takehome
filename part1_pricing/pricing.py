@@ -1,65 +1,20 @@
 """
-Part 1 - Pricing Model
+Part 1 - Pricing Model: two-phase PropAMM quote.
 
-Two-phase PropAMM quote:
+  1. Stable phase: the part of a trade that moves the pool toward 50/50
+     (in oracle value) executes at the flat oracle price P.
+  2. Curve phase: the remainder executes on the concentrated CPMM
+         (x + vx)(y + vy) = L^2,  vx = x * (alpha - 1),  vy = y * (alpha - 1).
 
-  1. Stable phase: any part of the trade that moves the pool toward 50/50
-     (measured in oracle value) executes at the flat oracle price P.
-  2. Curve phase: the remainder executes on a concentrated CPMM
-         (x + virtual_x)(y + virtual_y) = L^2
-     with virtual_x = reserve_x * (alpha - 1), virtual_y = reserve_y * (alpha - 1).
+Key observation: (x + vx) = alpha * x and (y + vy) = alpha * y, so the
+curve-implied marginal price is cpPrice = y / x. Alpha changes depth
+(slippage), not the starting price.
 
-Key observation
----------------
-Because the virtual reserves scale both sides by the same factor,
-    (x + vx) = alpha * x,   (y + vy) = alpha * y
-so the curve-implied marginal price is simply
-    cpPrice = reserve_y / reserve_x
-Alpha therefore does not change the starting price of the curve, only its depth
-(how fast the price moves as the trade consumes liquidity).
+Units: X = base token (WBNB), Y = quote token (USDT). Every price
+(price_P, cpPrice, bid, ask, effective_price) is in Y per X.
 
-Units
------
-- X = base token (WBNB), Y = quote token (USDT).
-- price_P, cpPrice, bid, ask and effective_price are all expressed in Y per X.
-
-Assumptions (also listed in MODEL.md)
--------------------------------------
-A1. "50/50" is measured in oracle value: reserve_x * P vs reserve_y.
-A2. A trade only enters the stable phase if it moves the pool toward 50/50.
-    It executes at P until the pool is exactly balanced; the remainder goes
-    to the curve.
-A3. The curve phase uses the reserves *after* the stable phase to build the
-    virtual reserves. If a trade crosses from stable to curve, the pool is
-    balanced at the boundary, so the curve starts exactly at P.
-A4. Fee is charged on the input token: fee_charged = amount_in * fee_bps / 1e4.
-    The net amount (amount_in - fee) is what gets priced.
-A5. effective_price is the all-in price the trader pays, i.e. it is computed
-    from the gross amount_in (fee included).
-A6. Virtual liquidity changes pricing depth but cannot create transferable
-    tokens. If amount_out would reach or exceed the real reserve, the quote
-    is rejected (InsufficientLiquidity) rather than clamped, because clamping
-    would silently change the execution price.
-A7. get_bid_ask returns pre-fee marginal prices (its signature has no fee_bps).
-A8. The test table does not specify fee_bps. The canonical results are
-    reported with fee_bps = 0 to isolate the pricing model; a 5 bps run is
-    included for illustration only.
-A9. Fees are accounted for separately and excluded from the simulated pricing
-    reserves. Each call rebuilds virtual reserves; no invariant is persisted
-    between calls, so splitting a trade can change its total output. Under
-    the same fee, fixed P and alpha, same direction, reserves updated by the
-    net (post-fee) input after each fill, and both executions fillable,
-    splitting never increases total output (ignoring floating-point
-    rounding). Total output is strictly lower only when alpha > 1 and at
-    least two sub-trades each carry positive curve input; otherwise it is
-    identical. In particular, a stable -> curve crossing trade split exactly
-    at the boundary, or anywhere before it, yields the same output as the
-    single trade, because the curve portion is still executed in one piece.
-    Example: Case A split into 2 x 250 USDT yields ~6.14e-5 WBNB less than
-    one 500 USDT trade.
-A10. Inputs must be finite, reserves/P/amount_in positive, alpha >= 1, and
-     0 <= fee_bps < 10000. Calculations use floats in human token units;
-     on-chain integer rounding is outside the scope of this model.
+Modeling assumptions A1-A10 are documented in MODEL.md; inline comments
+below reference them by id.
 """
 
 from __future__ import annotations
@@ -74,11 +29,10 @@ class InsufficientLiquidity(Exception):
 
 @dataclass(frozen=True)
 class QuoteBreakdown:
-    """Phase amounts and reserve ratios in Y per X.
+    """Per-phase amounts plus the curve price before and the real Y/X ratio after.
 
-    cp_price_before is the starting curve price. reserve_ratio_after is the
-    final real Y/X ratio, excluding fees; it is not the endpoint price of the
-    curve with this trade's fixed virtual reserves.
+    reserve_ratio_after is the final real reserve ratio (fees excluded); it is
+    not the endpoint price of the curve used for this trade.
     """
 
     stable_in: float
@@ -95,6 +49,7 @@ class QuoteBreakdown:
 
 
 def _validate(reserve_x: float, reserve_y: float, price_P: float, alpha: float) -> None:
+    # A10
     for name, value in (
         ("reserve_x", reserve_x), ("reserve_y", reserve_y),
         ("price_P", price_P), ("alpha", alpha),
@@ -112,31 +67,23 @@ def _validate(reserve_x: float, reserve_y: float, price_P: float, alpha: float) 
 def _stable_capacity(
     reserve_x: float, reserve_y: float, price_P: float, swap_x_to_y: bool
 ) -> float:
-    """
-    Maximum input amount that can execute at the flat oracle price P before the
-    pool reaches 50/50 in oracle value. Returns 0 if the trade direction would
-    worsen the imbalance.
+    """Input that can fill at P before the pool is 50/50 in oracle value (A1, A2).
 
-    Y -> X (trader sells dy of Y, receives dy/P of X):
-        balance when (rx - dy/P) * P == ry + dy   =>  dy* = (rx*P - ry) / 2
-    X -> Y (trader sells dx of X, receives dx*P of Y):
-        balance when (rx + dx) * P == ry - dx*P   =>  dx* = (ry - rx*P) / (2P)
+    Y->X: (rx*P - ry) / 2.   X->Y: (ry - rx*P) / (2P).   Zero if the direction
+    would worsen the imbalance. Derivation in MODEL.md, "Stable capacity".
     """
     value_gap = reserve_x * price_P - reserve_y  # > 0 means X-heavy
     if swap_x_to_y:
-        # Trader adds X. Only helps if the pool is Y-heavy (value_gap < 0).
         return max(0.0, -value_gap / (2 * price_P))
-    # Trader adds Y. Only helps if the pool is X-heavy (value_gap > 0).
     return max(0.0, value_gap / 2)
 
 
 def _curve_out(
     reserve_x: float, reserve_y: float, alpha: float, amount_in: float, swap_x_to_y: bool
 ) -> float:
-    """
-    Output of a trade of size amount_in on the concentrated curve
-        (x + vx)(y + vy) = L^2,  vx = rx*(alpha-1), vy = ry*(alpha-1)
-    which is a CPMM on the effective reserves X = alpha*rx, Y = alpha*ry.
+    """CPMM output on effective reserves X = alpha*rx, Y = alpha*ry (A3).
+
+    Y->X: X*r / (Y + r).   X->Y: Y*r / (X + r).   See MODEL.md, "Curve output".
     """
     if amount_in <= 0:
         return 0.0
@@ -170,13 +117,13 @@ def get_quote_detailed(
     if not isinstance(swap_x_to_y, bool):
         raise ValueError("swap_x_to_y must be a bool")
 
-    # A4: fee on the input token.
+    # A4: fee on the input token; only the net amount is priced.
     fee_charged = amount_in * (fee_bps / 10_000)
     net_in = amount_in - fee_charged
 
     cp_before = reserve_y / reserve_x
 
-    # Phase 1: stable phase at flat price P (A1, A2).
+    # Phase 1: stable phase at flat price P.
     capacity = _stable_capacity(reserve_x, reserve_y, price_P, swap_x_to_y)
     stable_in = min(net_in, capacity)
     if swap_x_to_y:
@@ -186,7 +133,7 @@ def get_quote_detailed(
         stable_out = stable_in / price_P
         rx, ry = reserve_x - stable_out, reserve_y + stable_in
 
-    # Phase 2: curve phase on post-stable reserves (A3).
+    # Phase 2: curve phase built from the post-stable reserves (A3).
     curve_in = net_in - stable_in
     curve_out = _curve_out(rx, ry, alpha, curve_in, swap_x_to_y)
     if swap_x_to_y:
@@ -195,26 +142,16 @@ def get_quote_detailed(
         rx, ry = rx - curve_out, ry + curve_in
 
     amount_out = stable_out + curve_out
-    if not isfinite(amount_out) or amount_out <= 0:
-        raise ValueError("amount_out must be finite and positive; check numeric scale")
 
-    # A6: virtual liquidity is not withdrawable.
+    # A6: virtual liquidity is not withdrawable; reject rather than clamp.
     real_reserve_out = reserve_y if swap_x_to_y else reserve_x
     if amount_out >= real_reserve_out:
         raise InsufficientLiquidity(
             f"amount_out={amount_out:.6f} would exhaust real reserve {real_reserve_out}"
         )
 
-    # A5: all-in price in Y per X, computed from gross amount_in.
-    if swap_x_to_y:
-        effective_price = amount_out / amount_in
-    else:
-        effective_price = amount_in / amount_out
-    reserve_ratio_after = ry / rx
-    if not all(isfinite(value) and value > 0 for value in (
-        effective_price, cp_before, reserve_ratio_after,
-    )):
-        raise ValueError("computed prices must be finite and positive; check numeric scale")
+    # A5: all-in price in Y per X, computed from the gross amount_in.
+    effective_price = amount_out / amount_in if swap_x_to_y else amount_in / amount_out
 
     breakdown = QuoteBreakdown(
         stable_in=stable_in,
@@ -222,7 +159,7 @@ def get_quote_detailed(
         curve_in=curve_in,
         curve_out=curve_out,
         cp_price_before=cp_before,
-        reserve_ratio_after=reserve_ratio_after,
+        reserve_ratio_after=ry / rx,
     )
     return amount_out, effective_price, fee_charged, breakdown
 
@@ -236,13 +173,10 @@ def get_quote(
     amount_in: float,
     swap_x_to_y: bool,
 ) -> tuple[float, float, float]:
-    """
-    Quote a swap against the two-phase PropAMM.
+    """Quote a swap. Returns (amount_out, effective_price, fee_charged).
 
-    Returns (amount_out, effective_price, fee_charged) where
-      - amount_out is in the output token,
-      - effective_price is the all-in price in Y per X,
-      - fee_charged is in the input token.
+    amount_out is in the output token, effective_price is the all-in price in
+    Y per X, fee_charged is in the input token.
     """
     amount_out, effective_price, fee_charged, _ = get_quote_detailed(
         reserve_x, reserve_y, price_P, alpha, fee_bps, amount_in, swap_x_to_y
@@ -253,21 +187,14 @@ def get_quote(
 def get_bid_ask(
     reserve_x: float, reserve_y: float, price_P: float, alpha: float
 ) -> tuple[float, float]:
-    """
-    Pre-fee marginal bid/ask in Y per X.
+    """Pre-fee marginal (bid, ask) in Y per X (A7).
 
-    A trade that rebalances the pool executes at P; a trade that worsens the
-    imbalance executes on the curve whose marginal price is cpPrice = ry/rx.
-    Hence
-        bid = min(P, cpPrice)   (price the pool pays when it buys X)
-        ask = max(P, cpPrice)   (price the pool charges when it sells X)
-    and the spread is |P - cpPrice|. When balanced, bid = ask = P.
-    Alpha does not affect the marginal price (see module docstring).
+    bid = min(P, cpPrice), ask = max(P, cpPrice) with cpPrice = ry / rx, so
+    bid <= P <= ask: the pool never quotes better than the oracle. Alpha does
+    not enter because it scales both reserves equally.
     """
     _validate(reserve_x, reserve_y, price_P, alpha)
     cp_price = reserve_y / reserve_x
-    if not isfinite(cp_price) or cp_price <= 0:
-        raise ValueError("computed curve price must be finite and positive; check numeric scale")
     return min(price_P, cp_price), max(price_P, cp_price)
 
 
@@ -276,17 +203,25 @@ def get_bid_ask(
 # --------------------------------------------------------------------------- #
 
 OFFICIAL_CASES = {
-    "A": dict(reserve_x=100, reserve_y=62_700, price_P=627, alpha=1.02, amount_in=500),
-    "B": dict(reserve_x=80, reserve_y=75_000, price_P=627, alpha=1.02, amount_in=500),
-    "C": dict(reserve_x=120, reserve_y=50_000, price_P=627, alpha=1.02, amount_in=500),
-    "D": dict(reserve_x=100, reserve_y=62_700, price_P=627, alpha=1.05, amount_in=500),
+    "A": dict(reserve_x=100, reserve_y=62_700, price_P=627, alpha=1.02, amount_in=500, swap_x_to_y=False),
+    "B": dict(reserve_x=80, reserve_y=75_000, price_P=627, alpha=1.02, amount_in=500, swap_x_to_y=False),
+    "C": dict(reserve_x=120, reserve_y=50_000, price_P=627, alpha=1.02, amount_in=500, swap_x_to_y=False),
+    "D": dict(reserve_x=100, reserve_y=62_700, price_P=627, alpha=1.05, amount_in=500, swap_x_to_y=False),
 }
 
-# Extra case: Case C reserves with a trade large enough to cross from the
-# stable phase into the curve phase. None of the official cases exercise this.
-EXTRA_CASES = {
-    "E": dict(reserve_x=120, reserve_y=50_000, price_P=627, alpha=1.02, amount_in=20_000),
+# E: Case C reserves with a trade large enough to cross from stable into curve.
+CROSSING_CASES = {
+    "E": dict(reserve_x=120, reserve_y=50_000, price_P=627, alpha=1.02, amount_in=20_000, swap_x_to_y=False),
 }
+
+# F, G: reverse direction (trader sells WBNB). F is Y-heavy so selling X
+# rebalances and fills at P; G is balanced so it goes straight to the curve.
+REVERSE_CASES = {
+    "F": dict(reserve_x=80, reserve_y=75_000, price_P=627, alpha=1.02, amount_in=1, swap_x_to_y=True),
+    "G": dict(reserve_x=100, reserve_y=62_700, price_P=627, alpha=1.02, amount_in=1, swap_x_to_y=True),
+}
+
+ALL_CASES = {**OFFICIAL_CASES, **CROSSING_CASES, **REVERSE_CASES}
 
 
 def _pool_state(rx: float, ry: float, P: float) -> str:
@@ -300,20 +235,24 @@ def _run_table(cases: dict, fee_bps: float) -> list[str]:
     lines = [
         f"#### fee_bps = {fee_bps:g}",
         "",
-        "| Case | Pool | alpha | cpPrice | bid | ask | stable_capacity | stable_in | curve_in | amount_out (WBNB) | eff. price | fee (USDT) |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| Case | Direction | Pool | alpha | cpPrice | bid | ask | stable_capacity "
+        "| stable_in | curve_in | amount_in | amount_out | eff. price | fee |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for name, c in cases.items():
+        d = c["swap_x_to_y"]
         bid, ask = get_bid_ask(c["reserve_x"], c["reserve_y"], c["price_P"], c["alpha"])
         out, eff, fee, bd = get_quote_detailed(
             c["reserve_x"], c["reserve_y"], c["price_P"], c["alpha"],
-            fee_bps, c["amount_in"], swap_x_to_y=False,
+            fee_bps, c["amount_in"], swap_x_to_y=d,
         )
         state = _pool_state(c["reserve_x"], c["reserve_y"], c["price_P"])
-        capacity = _stable_capacity(c["reserve_x"], c["reserve_y"], c["price_P"], False)
+        capacity = _stable_capacity(c["reserve_x"], c["reserve_y"], c["price_P"], d)
+        direction = "X->Y (WBNB in)" if d else "Y->X (USDT in)"
         lines.append(
-            f"| {name} | {state} | {c['alpha']:.2f} | {bd.cp_price_before:.2f} | {bid:.2f} | {ask:.2f} "
-            f"| {capacity:,.2f} | {bd.stable_in:,.2f} | {bd.curve_in:,.2f} | {out:.6f} | {eff:.4f} | {fee:.4f} |"
+            f"| {name} | {direction} | {state} | {c['alpha']:.2f} | {bd.cp_price_before:.2f} "
+            f"| {bid:.2f} | {ask:.2f} | {capacity:,.4f} | {bd.stable_in:,.4f} | {bd.curve_in:,.4f} "
+            f"| {c['amount_in']:,.4f} | {out:,.6f} | {eff:.4f} | {fee:.4f} |"
         )
     lines.append("")
     return lines
@@ -325,14 +264,14 @@ def _sanity_checks() -> list[str]:
     notes = []
 
     # Case C: fully stable, effective price == P at zero fee.
-    out, eff, _, bd = get_quote_detailed(120, 50_000, P, 1.02, 0, 500, False)
+    _, eff, _, bd = get_quote_detailed(120, 50_000, P, 1.02, 0, 500, False)
     assert abs(eff - P) < 1e-9, eff
     assert bd.curve_in == 0
     notes.append("Case C executes entirely at P (eff. price == 627, curve_in == 0)")
 
     # Case A vs D: larger alpha => deeper curve => slightly more output.
-    out_a, _, _, _ = get_quote_detailed(100, 62_700, P, 1.02, 0, 500, False)
-    out_d, _, _, _ = get_quote_detailed(100, 62_700, P, 1.05, 0, 500, False)
+    out_a, _, _ = get_quote(100, 62_700, P, 1.02, 0, 500, False)
+    out_d, _, _ = get_quote(100, 62_700, P, 1.05, 0, 500, False)
     assert out_d > out_a
     notes.append("Case D (alpha 1.05) returns more WBNB than Case A (alpha 1.02)")
 
@@ -342,23 +281,34 @@ def _sanity_checks() -> list[str]:
     assert bd_e.curve_in > 0
     notes.append("Case E splits: 12,620 USDT stable, 7,380 USDT curve")
 
-    # Effective price is never better than the marginal ask for Y -> X.
-    for c in {**OFFICIAL_CASES, **EXTRA_CASES}.values():
-        _, ask = get_bid_ask(c["reserve_x"], c["reserve_y"], c["price_P"], c["alpha"])
-        _, eff, _, _ = get_quote_detailed(
-            c["reserve_x"], c["reserve_y"], c["price_P"], c["alpha"], 0, c["amount_in"], False
-        )
-        assert eff >= ask - 1e-9
-    notes.append("Effective price >= marginal ask for every Y -> X case")
-
-    # Symmetry: X -> Y on a Y-heavy pool is fully stable at P.
-    out, eff, _, bd = get_quote_detailed(80, 75_000, P, 1.02, 0, 1.0, True)
+    # Case F: X->Y on a Y-heavy pool is fully stable at P.
+    out, eff, _, _ = get_quote_detailed(80, 75_000, P, 1.02, 0, 1.0, True)
     assert abs(eff - P) < 1e-9 and abs(out - P) < 1e-9
-    notes.append("X -> Y on Y-heavy pool (Case B reserves) executes at P")
+    notes.append("Case F (X->Y on Y-heavy Case B reserves) executes at P")
+
+    # Effective price never beats the marginal bid/ask in any case.
+    for c in ALL_CASES.values():
+        bid, ask = get_bid_ask(c["reserve_x"], c["reserve_y"], c["price_P"], c["alpha"])
+        _, eff, _, _ = get_quote_detailed(
+            c["reserve_x"], c["reserve_y"], c["price_P"], c["alpha"],
+            0, c["amount_in"], c["swap_x_to_y"],
+        )
+        assert eff <= bid + 1e-9 if c["swap_x_to_y"] else eff >= ask - 1e-9
+    notes.append("Effective price never beats the marginal bid (X->Y) or ask (Y->X) in any case")
+
+    # No-arbitrage against the oracle: bid <= P <= ask, so a zero-fee round
+    # trip always returns less than it started with.
+    for x, y in ((100, 62_700), (80, 75_000), (120, 50_000)):
+        bid, ask = get_bid_ask(x, y, P, 1.02)
+        assert bid <= P <= ask
+        ox, _, _ = get_quote(x, y, P, 1.02, 0, 500, False)
+        back, _, _ = get_quote(x - ox, y + 500, P, 1.02, 0, ox, True)
+        assert back < 500, back
+    notes.append("bid <= P <= ask; a zero-fee round trip 500 USDT -> WBNB -> USDT never profits")
 
     # Rejection: a trade that would drain the real reserve is rejected.
     try:
-        get_quote_detailed(100, 62_700, P, 1.02, 0, 10_000_000, False)
+        get_quote(100, 62_700, P, 1.02, 0, 10_000_000, False)
         raise AssertionError("expected InsufficientLiquidity")
     except InsufficientLiquidity:
         notes.append("Oversized trade raises InsufficientLiquidity instead of clamping")
@@ -369,14 +319,23 @@ def _sanity_checks() -> list[str]:
 def main() -> str:
     lines = [
         "## Results", "",
-        "All swaps are Y -> X at oracle P = 627 USDT/WBNB. Prices are in USDT/WBNB;",
-        "stable_capacity, stable_in, and curve_in are in USDT. fee is the charged amount, not the fee rate.",
-        "", "### Official cases A-D", "", "Gross input: 500 USDT per case.", "",
+        "Oracle P = 627 USDT/WBNB in every case. Prices (cpPrice, bid, ask, eff. price) are in USDT/WBNB.",
+        "stable_capacity, stable_in, curve_in, amount_in and fee are in the input token;",
+        "amount_out is in the output token. Y->X means the trader pays USDT and receives WBNB;",
+        "X->Y means the trader pays WBNB and receives USDT. fee is the charged amount, not the rate.",
+        "", "### Official cases A-D", "", "Y->X, gross input 500 USDT per case.", "",
     ]
     lines += _run_table(OFFICIAL_CASES, 0)
     lines += _run_table(OFFICIAL_CASES, 5)
-    lines += ["### Crossing case E", "", "Case C reserves; gross input: 20,000 USDT.", ""]
-    lines += _run_table(EXTRA_CASES, 0)
+    lines += ["### Crossing case E", "", "Case C reserves, Y->X, gross input 20,000 USDT.", ""]
+    lines += _run_table(CROSSING_CASES, 0)
+    lines += [
+        "### Reverse-direction cases F-G", "",
+        "X->Y, gross input 1 WBNB. F uses Case B reserves (Y-heavy), so selling WBNB rebalances",
+        "the pool and fills entirely at P. G uses Case A reserves (balanced), so it goes straight",
+        "to the curve and fills below P.", "",
+    ]
+    lines += _run_table(REVERSE_CASES, 0)
     lines.append("### Sanity checks / observations")
     lines.append("")
     for note in _sanity_checks():

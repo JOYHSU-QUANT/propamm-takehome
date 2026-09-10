@@ -200,6 +200,26 @@ class PricingTests(unittest.TestCase):
                     self.assertClose(split(x, y, 1.02, fee_bps, [total / 2] * 2, direction),
                                      single(x, y, 1.02, fee_bps, total, direction), rel_tol=1e-12)
 
+    def test_round_trip_never_profits(self):
+        # bid <= P <= ask by construction, so buying and immediately selling
+        # back (or the reverse) can never return more than the starting amount.
+        P = 627
+        for x, y in [(100, 62700), (80, 75000), (120, 50000)]:
+            bid, ask = get_bid_ask(x, y, P, 1.02)
+            self.assertLessEqual(bid, P)
+            self.assertLessEqual(P, ask)
+            for alpha in (1, 1.02, 1.05):
+                for fee_bps in (0, 5):
+                    with self.subTest(x=x, alpha=alpha, fee=fee_bps):
+                        # USDT -> WBNB -> USDT
+                        ox, _, fx = get_quote(x, y, P, alpha, fee_bps, 500, False)
+                        back, _, _ = get_quote(x - ox, y + 500 - fx, P, alpha, fee_bps, ox, True)
+                        self.assertLess(back, 500)
+                        # WBNB -> USDT -> WBNB
+                        oy, _, fy = get_quote(x, y, P, alpha, fee_bps, 1, True)
+                        back, _, _ = get_quote(x + 1 - fy, y - oy, P, alpha, fee_bps, oy, False)
+                        self.assertLess(back, 1)
+
     def test_tiny_trades_approach_bid_ask(self):
         for x, y in [(100, 62700), (80, 75000), (120, 50000)]:
             with self.subTest(x=x):
