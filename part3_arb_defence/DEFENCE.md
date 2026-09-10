@@ -37,7 +37,7 @@ slippage closes the 6% gap. At 10 USDT this was a probe. At pool depth it would 
 been the whole inventory, repriced at a 6% discount, block after block, until the next
 refresh.
 
-(≈ 250 words)
+(266 words)
 
 ## 2. Detect
 
