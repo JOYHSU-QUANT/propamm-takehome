@@ -65,11 +65,50 @@ A1-A10 match the implementation's inline references.
 
 For X to Y, input is token X and output is token Y; the reverse swap exchanges these units.
 
-### Input allocation
+### Input
 
-$$
-f=a\frac{b}{10^4},\qquad q=a-f,\qquad s=\min(q,c),\qquad r=q-s.
-$$
+**Fees and net input**
+
+```math
+f=a\frac{b}{10^4},\qquad q=a-f.
+```
+
+`net_in` depends on trade size and fees; `capacity` depends on reserves, $P$, and direction.
+
+**Stable capacity**
+
+For a rebalancing trade, the stable limit ($s=c$) satisfies $P x_s=y_s$.
+After stable input $s$, the reserves are:
+
+| Swap direction | X reserve $x_s$ | Y reserve $y_s$ |
+|---|---|---|
+| Y to X | $x-\frac{s}{P}$ | $y+s$ |
+| X to Y | $x+s$ | $y-Ps$ |
+
+Substituting into the balance condition and solving for $s$:
+
+```math
+\begin{aligned}
+Y\to X:\quad & P\left(x-\frac{s}{P}\right)=y+s
+&&\Longrightarrow\quad s=\frac{Px-y}{2},\\
+X\to Y:\quad & P(x+s)=y-Ps
+&&\Longrightarrow\quad s=\frac{y-Px}{2P}.
+\end{aligned}
+```
+
+Both sides change by the same oracle value, so the gap closes by twice that amount.
+Take the positive part of the solution; non-rebalancing flow has zero capacity.
+
+| Direction | Stable capacity $c$ |
+|---|---|
+| X to Y | $\max\left(0,\frac{y-Px}{2P}\right)$ |
+| Y to X | $\max\left(0,\frac{Px-y}{2}\right)$ |
+
+**Input allocation**
+
+```math
+s=\min(q,c),\qquad r=q-s.
+```
 
 These equations cover all three paths in the flowchart:
 
@@ -82,80 +121,83 @@ These equations cover all three paths in the flowchart:
 Curve uses the reserves after Stable, or the original reserves when $s=0$.
 A phase with zero input contributes zero output.
 
-`net_in` depends on trade size and fees; `capacity` depends on reserves, $P$, and direction.
 Case E: 20,000 USDT net input minus 12,620 Stable capacity leaves 7,380 for Curve.
 
-Stable output at the oracle price is:
+### Output
 
-$$
-o_s=\begin{cases}sP,&X\to Y,\\s/P,&Y\to X.\end{cases}
-$$
+**Stable output**
 
-### Stable capacity
+At the oracle price:
 
-At capacity, the post-trade reserves have equal oracle value. For Y to X,
-input $s$ adds $s$ Y and removes $s/P$ X; for X to Y, it adds $s$ X and removes $Ps$ Y:
+```math
+o_s = \begin{cases}
+sP, & X \to Y, \\
+\frac{s}{P}, & Y \to X.
+\end{cases}
+```
 
-$$
-\begin{aligned}
-Y\to X:\quad & P\left(x-\frac{s}{P}\right)=y+s
-&&\Longrightarrow\quad s=\frac{Px-y}{2},\\
-X\to Y:\quad & P(x+s)=y-Ps
-&&\Longrightarrow\quad s=\frac{y-Px}{2P}.
-\end{aligned}
-$$
+**Curve construction**
 
-Both sides change by the same oracle value, so the gap closes by twice that amount.
-Take the positive part of the solution; non-rebalancing flow has zero capacity.
-
-| Direction | Stable capacity $c$ |
-|---|---|
-| X to Y | $\max\left(0,\frac{y-Px}{2P}\right)$ |
-| Y to X | $\max\left(0,\frac{Px-y}{2}\right)$ |
-
-### Curve construction
-
-$$
+```math
 v_x=(\alpha-1)x_s,\quad v_y=(\alpha-1)y_s,\qquad
 X=x_s+v_x=\alpha x_s,\quad Y=y_s+v_y=\alpha y_s.
-$$
+```
 
-$$
+```math
 (x_t+v_x)(y_t+v_y)=L^2=XY.
-$$
+```
 
-### Curve output
+**Curve output**
 
 With virtual reserves fixed, add $r$ to the input side and subtract $o_c$ from
 the output side, preserving the product $XY$:
 
-$$
+```math
 \begin{aligned}
 Y\to X:\quad &(X-o_c)(Y+r)=XY
 &&\Longrightarrow\quad o_c=X-\frac{XY}{Y+r}=\frac{Xr}{Y+r},\\
 X\to Y:\quad &(X+r)(Y-o_c)=XY
 &&\Longrightarrow\quad o_c=Y-\frac{XY}{X+r}=\frac{Yr}{X+r}.
 \end{aligned}
-$$
+```
 
 The implementation uses the final fractions to avoid subtracting nearly equal values.
 Real-reserve limits are checked separately (A6).
 
-Total output and all-in effective price are:
+**Total output by execution mode**
 
-$$
+Here $q$ is net input and $c$ is stable capacity. Each entry is total output $o$:
+
+| Mode | Condition | X to Y: output in Y | Y to X: output in X |
+|---|---|---|---|
+| Curve only | $c=0$ | $\frac{Yq}{X+q}$ | $\frac{Xq}{Y+q}$ |
+| Stable only | $0<q\le c$ | $qP$ | $q/P$ |
+| Stable then Curve | $q>c>0$ | $cP+\frac{Y(q-c)}{X+q-c}$ | $\frac{c}{P}+\frac{X(q-c)}{Y+q-c}$ |
+
+For Curve only, $X=\alpha x$ and $Y=\alpha y$. For the mixed mode, use the
+post-Stable reserves: $X=\alpha x_s$, $Y=\alpha y_s$, where
+$(x_s,y_s)=(x+c,y-Pc)$ for X to Y, or $(x-c/P,y+c)$ for Y to X.
+
+**Effective price**
+
+Using gross input, in Y per X:
+
+```math
 o=o_s+o_c,\qquad
-p_{\mathrm{eff}}=\begin{cases}o/a,&X\to Y,\\a/o,&Y\to X.\end{cases}
-$$
+p_{\mathrm{eff}} = \begin{cases}
+\frac{o}{a}, & X \to Y, \\
+\frac{a}{o}, & Y \to X.
+\end{cases}
+```
 
-### Bid / ask
+### Bid and Ask
 
 At the start of a quote, the pre-fee marginal prices are:
 
-$$
+```math
 p_c=\frac{\alpha y}{\alpha x}=\frac{y}{x},\qquad
 \mathrm{bid}=\min(P,p_c),\qquad \mathrm{ask}=\max(P,p_c).
-$$
+```
 
 Alpha changes depth, not the starting price. `get_quote_detailed` also reports
 phase amounts and `reserve_ratio_after`: the final real Y/X ratio excluding fees,
