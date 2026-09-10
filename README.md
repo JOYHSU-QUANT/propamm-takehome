@@ -1,11 +1,11 @@
 # PropAMM Quant Developer Take-Home
 
-Parts 1 and 4 were selected per the assignment email.
+Parts 1 and 3 were selected per the assignment email.
 
 | Part | Deliverables | Status |
 |---|---|---|
 | 1 - Pricing model | [Code](part1_pricing/pricing.py) / [Model & results](part1_pricing/MODEL.md) | Implemented |
-| 4 - System design | [Design](part4_system_design/DESIGN.md) | Draft skeleton |
+| 3 - Arb detection & defence | [Writeup](part3_arb_defence/DEFENCE.md) / [Code](part3_arb_defence/arb_detection.py) | Draft skeleton |
 
 ## Run Part 1
 

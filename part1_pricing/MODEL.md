@@ -205,7 +205,8 @@ not the endpoint price of the fixed-virtual-reserve curve.
 
 With fixed $P$ equal to the external market price, $\mathrm{bid}\le P\le\mathrm{ask}$
 and adverse slippage prevent profitable pool-to-market arbitrage within this model.
-This assumes valid fills and excludes oracle changes and implementation faults.
+This assumes valid fills and excludes oracle changes and implementation faults. A stale $P$ removes this protection;
+[Part 3](../part3_arb_defence/DEFENCE.md) analyses that case.
 
 <!-- BEGIN GENERATED RESULTS -->
 
