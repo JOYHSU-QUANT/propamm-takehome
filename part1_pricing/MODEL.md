@@ -4,18 +4,26 @@
 
 ## Quote flow
 
-Main calculation path; a phase with zero input returns zero output.
-Invalid inputs, insufficient real liquidity, or invalid computed values reject the quote.
+The branches show the three execution cases; the implementation expresses them
+with `stable_in = min(net_in, capacity)` and zero output for a zero-input phase.
 
 ```mermaid
 flowchart TD
-    Validate[Validate inputs] --> Fee[Deduct input fee]
-    Fee --> Stable[Allocate stable input at oracle P<br/>Update reserves]
-    Stable --> Curve[Price remaining input on curve<br/>Update reserves]
-    Curve --> Output[Sum outputs<br/>Check output and real liquidity]
+    Start[Validate inputs and deduct fee] --> Capacity[Compute stable capacity]
+    Capacity --> Rebalance{"Rebalancing direction?<br/>capacity > 0"}
+    Rebalance -->|No| CurveOnly[All net input on Curve]
+    Rebalance -->|Yes| Fits{"Net input fits<br/>stable capacity?"}
+    Fits -->|Yes| StableOnly[All net input at oracle P]
+    Fits -->|No| StableFirst[Stable up to balance<br/>Update reserves]
+    StableFirst --> CurveRest[Remainder on Curve<br/>using updated reserves]
+    CurveOnly --> Output[Sum outputs and check real liquidity]
+    StableOnly --> Output
+    CurveRest --> Output
     Output --> Price[Compute and validate prices]
     Price --> Return([Return output, effective price, fee])
 ```
+
+Invalid inputs, insufficient real liquidity, or invalid computed values reject the quote.
 
 ## Pricing equations
 
