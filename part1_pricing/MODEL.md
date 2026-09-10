@@ -128,6 +128,8 @@ Here $r$ is the remaining net input after the stable phase; if $r=0$, then $o_c=
 The implementation uses the final fractional forms to avoid subtracting nearly
 equal values, and separately checks that real reserves can pay the total output.
 
+**Marginal bid and ask**
+
 At the start of a quote, the pre-fee marginal prices are:
 
 $$
