@@ -4,8 +4,8 @@
 
 ## 1. Diagnose
 
-The trader borrowed 10 USDT from Lista DAO, bought 0.01702 WBNB from the PropAMM,
-sold it on PancakeSwap V2 for 10.627 USDT, and repaid the loan.
+Using a Lista DAO flashloan, the trader bought 0.01702 WBNB for 10 USDT on the
+PropAMM and sold it for 10.627 USDT on PancakeSwap V2.
 
 | Metric | Calculation | Result |
 |---|---|---|
@@ -24,11 +24,9 @@ With a stale $P$, the pool's ask can remain below the external market, allowing 
 immediate resale profit. The enabling condition was accepting that price without an
 effective freshness or independent deviation guard.
 
-Buying back the sold WBNB on Binance realises the same economic loss, plus hedge
-execution costs. Flashloan funding makes the route atomic without upfront trading
-capital; a funded trader can exploit the same gap. Curve slippage and available
-inventory limit the profitable size. The assignment does not specify the stale
-duration or the pool's reserves.
+Flashloan funding makes the route atomic without upfront capital; a funded trader can
+exploit the same gap. Curve slippage and real inventory limit the profitable size.
+The stale duration and reserves are unknown.
 
 ### Exposure scale
 
@@ -45,12 +43,15 @@ attack bound. For effective Curve reserves $X,Y$ and net quote input $q$:
 
 ```math
 \pi_c(q)=R\frac{Xq}{Y+q}-q,
-\qquad q^*=\max\left(0,\sqrt{RXY}-Y\right).
+\qquad q^*=\max\left(0,\sqrt{RXY}-Y\right),
+\qquad \pi_c(q^*)=\left[\max\left(0,\sqrt{RX}-\sqrt{Y}\right)\right]^2.
 ```
 
 At a balanced curve, $Y/X=P$, hence $q^*/Y=\sqrt{R/P}-1\approx3.1\%$ for
-$R/P=624/587$. The missing reserves prevent a USD loss estimate. Fees and real-reserve
-limits reduce the profitable size; hedge execution adds cost to the pool.
+$R/P=624/587$. As an illustration, $x=100$ WBNB, $y=58{,}700$ USDT and
+$\alpha=1.02$ give $q^*=1{,}858.17$ USDT and maximum gross profit $57.67$ USDT
+before fees: the observed $0.627$ is about $1/92$ of that maximum. These are not the
+observed reserves; fees and real-reserve limits reduce the result.
 
 ## 2. Detect
 

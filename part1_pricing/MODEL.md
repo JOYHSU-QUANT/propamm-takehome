@@ -203,6 +203,11 @@ Alpha changes depth, not the starting price. `get_quote_detailed` also reports
 phase amounts and `reserve_ratio_after`: the final real Y/X ratio excluding fees,
 not the endpoint price of the fixed-virtual-reserve curve.
 
+At balance, Part 1 intentionally returns $\mathrm{bid}=\mathrm{ask}=P$: the Stable
+phase is specified to execute at the flat oracle price, and `get_bid_ask` has no
+spread input. Part 2's 5 bps is an exogenous production-spread assumption for refresh
+economics. Part 1 charges `fee_bps`; Part 3 studies loss from oracle staleness.
+
 **No arbitrage against the oracle.** With $P$ equal to the external market price,
 $\mathrm{bid}\le P\le\mathrm{ask}$ means the pool never quotes a trader better than $P$
 in either direction, and a finite trade only adds slippage on top. A zero-fee round
