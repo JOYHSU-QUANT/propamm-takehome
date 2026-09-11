@@ -30,7 +30,8 @@ assumptions A1-A10, derivations, and both swap directions.
 
 A stale oracle let the trader buy below market and earn 0.627 USDT before loan fees
 and gas. The detector flags reverse swap pairs with at least 30 bps disadvantage
-against a reference; flashloan funding is optional. Defence checks source age, block
-age, and independent price deviation. Every-block refresh gives expiry budgets of
+against a reference; flashloan funding is optional. A rolling monitor covers slower
+extraction. Defence checks source age, block age, independent price deviation, and a
+block-level loss budget. Every-block refresh gives expiry budgets of
 6 BSC blocks and 4 Base blocks; slower schedules require recalculation.
 [Writeup](part3_arb_defence/DEFENCE.md) contains the assumptions and derivation.

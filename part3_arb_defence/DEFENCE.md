@@ -30,6 +30,28 @@ capital; a funded trader can exploit the same gap. Curve slippage and available
 inventory limit the profitable size. The assignment does not specify the stale
 duration or the pool's reserves.
 
+### Exposure scale
+
+For quote-to-base ($Y\to X$), stale-price exposure can span both phases. Stable
+capacity and its no-fee loss at external price $R$ are:
+
+```math
+c=\max\left(0,\frac{Px-y}{2}\right),
+\qquad \pi_s=c\left(\frac{R}{P}-1\right).
+```
+
+Only an X-heavy pool ($Px>y$) has positive $c$, so Stable capacity is not a general
+attack bound. For effective Curve reserves $X,Y$ and net quote input $q$:
+
+```math
+\pi_c(q)=R\frac{Xq}{Y+q}-q,
+\qquad q^*=\max\left(0,\sqrt{RXY}-Y\right).
+```
+
+At a balanced curve, $Y/X=P$, hence $q^*/Y=\sqrt{R/P}-1\approx3.1\%$ for
+$R/P=624/587$. The missing reserves prevent a USD loss estimate. Fees and real-reserve
+limits reduce the profitable size; hedge execution adds cost to the pool.
+
 ## 2. Detect
 
 ### Input contract
@@ -91,6 +113,20 @@ cannot identify which venue was stale. Amount matching does not prove common own
 or trace funding through routers; partial matches can join unrelated legs. This is an
 alert for two-leg patterns, not a complete detector for multi-hop or cross-transaction arb.
 
+### Coverage beyond one transaction
+
+Keep `is_suspicious_trade` scoped to the transaction interface in the assignment.
+A companion monitor compares every PropAMM fill with a block-aligned reference and
+aggregates pool-wide adverse loss over a rolling block window $W$:
+
+```math
+L_W=\sum_{i\in W}\max(0,d_i)\frac{\mathrm{notional}_i}{10^4}.
+```
+
+Alert or pause when a single fill exceeds 30 bps, $L_W$ exceeds its USD risk budget,
+or same-direction base outflow exceeds its inventory limit. Pool-wide aggregation
+prevents address rotation from hiding cross-transaction, slow, or multi-hop extraction.
+
 `analyse_trade()` returns the selected pair's prices, disadvantage, gross P&L,
 candidate count, and reasons. Gross P&L values leftover base at the reference; it
 excludes loan fees and gas and is not the whole transaction's profit.
@@ -121,17 +157,38 @@ flowchart TD
     ValidRef -->|No| Revert
     ValidRef -->|Yes| Deviation{"Deviation within<br/>MAX_DEV_BPS?"}
     Deviation -->|No| Revert
-    Deviation -->|Yes| Execute[Execute swap using P]
+    Deviation -->|Yes| Budget{"Block notional within<br/>V_BLOCK?"}
+    Budget -->|No| Revert
+    Budget -->|Yes| Execute[Execute swap using P]
 ```
 
 `EXPIRY_BLOCKS` and `MAX_SOURCE_AGE_S` come from Section 4. `MAX_DEV_BPS = 50`
 is illustrative. With all prices on one fixed-point scale, the integer check is
 `abs(P - ref) * 10_000 <= MAX_DEV_BPS * ref`.
 
-For BNB/USDT, the adapter can divide BNB/USD by USDT/USD after normalizing decimals;
-for ETH/USDC, use ETH/USD and USDC/USD. Validate every constituent feed's age against
-its configured limit. Chainlink feeds update on heartbeat or deviation triggers,
-so a recently read value is not necessarily a recent observation.
+| Control | Configuration | On failure |
+|---|---|---|
+| Primary price | Binance-derived price from the authorized updater; preserve `observed_at` | Reject update |
+| Source age / block expiry | Section 4: 5 s / 6 blocks on BSC; 8 s / 4 blocks on Base for every-block refresh | Revert swap |
+| Independent reference | BNB/USD divided by USDT/USD on BSC; ETH/USD divided by USDC/USD on Base | Revert swap |
+| Reference age | Each deployed feed's published heartbeat plus two blocks; reject future timestamps | Revert swap |
+| Price deviation | `MAX_DEV_BPS = 50` initially; calibrate from reference error and normal basis | Revert swap |
+| Block notional | `V_BLOCK` derived from the loss budget below | Revert excess swap |
+| Automatic fallback | None; a DEX TWAP requires separate manipulation and lag limits before use | Pause and alert |
+
+As defence in depth, cap aggregate quote notional per block by a loss budget:
+
+```math
+V_{\mathrm{block}}\le
+\frac{L_{\mathrm{block}}}{(\mathrm{MAX\_DEV\_BPS}+e_{\mathrm{ref}})/10^4},
+```
+
+where $L_{\mathrm{block}}$ is tolerated USD loss and $e_{\mathrm{ref}}$ is the
+reference error budget in bps. Both are deployment risk parameters; the assignment
+does not provide values from which to set them.
+
+Validate every constituent feed's `updatedAt`: Chainlink feeds update on heartbeat or
+deviation triggers, so read time does not prove freshness.
 [Reference validation](https://docs.chain.link/data-feeds#check-the-timestamp-of-the-latest-answer).
 
 **Effect.** A reference close to market rejects the observed 6% gap at a 50 bps

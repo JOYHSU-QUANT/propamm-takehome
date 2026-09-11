@@ -274,8 +274,11 @@ WBNB -> USDT; gross input: 1 WBNB. F uses Case B reserves; G uses Case A reserve
 
 <!-- END GENERATED RESULTS -->
 
-- **B:** Ask 937.5 versus oracle 627 reflects inventory imbalance. Deviation limits,
-  quote suspension, or pool rebalancing can constrain it; Binance hedging does not change pool reserves.
+- **B:** Ask 937.5 versus oracle 627 is model-consistent: $\alpha$ scales both
+  effective reserves, so it changes depth but not the starting price. Production
+  policy: if $|p_c/P-1|$ exceeds the configured inventory-skew limit, suppress the
+  inventory-worsening quote and rebalance the pool. Binance hedging does not restore
+  pool reserves.
 - **A vs D:** D is 2.94% deeper; output rises by 0.000175 WBNB and slippage falls
   from 78.18 to 75.95 bps.
 - **F vs G:** Rebalancing sells fill at 627 (F); sells into a balanced pool take
