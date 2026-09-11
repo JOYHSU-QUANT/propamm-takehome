@@ -69,16 +69,12 @@ price exceeds the oracle price in this attack, the positive branch applies. Divi
 the effective quote reserve and substitute the balance condition:
 
 ```math
-\begin{aligned}
-\frac{Y}{X}=P,\quad R>P
-&\quad\Longrightarrow\quad \sqrt{RXY}>Y, \\[4pt]
 \frac{q^*}{Y}
-&=\frac{\sqrt{RXY}-Y}{Y} \\
-&=\sqrt{\frac{RXY}{Y^2}}-1 \\
-&=\sqrt{\frac{RX}{Y}}-1 \\
-&=\sqrt{\frac{R}{Y/X}}-1 \\
-&=\sqrt{\frac{R}{P}}-1.
-\end{aligned}
+=\frac{\sqrt{RXY}-Y}{Y}
+=\sqrt{\frac{RXY}{Y^2}}-1
+=\sqrt{\frac{RX}{Y}}-1
+=\sqrt{\frac{R}{Y/X}}-1
+=\sqrt{\frac{R}{P}}-1.
 ```
 
 For the observed price ratio:
