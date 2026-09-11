@@ -50,11 +50,23 @@ and finite positive amounts and prices.
 
 ### Decision rule
 
-1. Find opposite-direction swaps on the pair, one on the PropAMM and one on another
-   venue. Either venue may come first. The later input must be no greater than the
-   earlier output, with 1% tolerance; unspent output is allowed.
-2. Evaluate every candidate and report the largest pool disadvantage $d$.
-3. Return `True` when $d \ge 30$ bps. A flashloan hint adds context but is not required.
+```mermaid
+flowchart TD
+    Decode[Decoded transaction] --> Pairs[Find PropAMM and other-venue<br/>opposite-direction swap pairs]
+    Pairs --> Match[Keep call-ordered pairs where later input<br/>is at most earlier output plus 1%]
+    Match --> Any{"Any matched pair?"}
+    Any -->|No| Clear[Not suspicious]
+    Any -->|Yes| Ref[For each pair: use external reference,<br/>or other-venue fill if absent]
+    Ref --> Loss[Calculate pool disadvantage d]
+    Loss --> Worst[Select the largest d]
+    Worst --> Gate{"d >= 30 bps?"}
+    Gate -->|Yes| Flag[Suspicious]
+    Gate -->|No| Clear
+    Decode -.-> Loan[Flashloan hint<br/>recorded as context only]
+```
+
+Either venue may come first, and unspent output is allowed. Every matched pair is
+evaluated so an earlier benign pair cannot hide a later attack.
 
 For PropAMM fill price $p$ and reference $R$, both in quote per base:
 
@@ -89,30 +101,32 @@ Reject swaps when the quote is expired, its source observation is too old, or it
 price deviates from an independent reference. The updater must preserve the source
 timestamp when resending an observation.
 
-```text
-// state: P (quote per base), source_ts, write_block
-// configuration: EXPIRY_BLOCKS and MAX_SOURCE_AGE_S from section 4
-// MAX_DEV_BPS = 50 is illustrative; prices share one fixed-point scale
+```mermaid
+flowchart TD
+    Update[updatePrice newP, observed_at] --> ValidUpdate{"Authorized, positive price,<br/>valid and newer source timestamp?"}
+    ValidUpdate -->|No| Revert[Revert]
+    ValidUpdate -->|Yes| FreshUpdate{"Source age within<br/>MAX_SOURCE_AGE_S?"}
+    FreshUpdate -->|No| Revert
+    FreshUpdate -->|Yes| Store[Store P, source_ts, write_block]
 
-function updatePrice(newP, observed_at):
-    require(authorizedUpdater(msg.sender))
-    require(newP > 0 && 0 < observed_at <= block.timestamp)
-    require(observed_at > source_ts, "replayed observation")
-    require(block.timestamp - observed_at <= MAX_SOURCE_AGE_S, "source stale")
-    P, source_ts, write_block = newP, observed_at, block.number
-
-function swap(amount_in, direction):
-    require(P > 0 && !paused)
-    require(block.number - write_block <= EXPIRY_BLOCKS, "quote expired")
-    require(block.timestamp - source_ts <= MAX_SOURCE_AGE_S, "source stale")
-
-    // Adapter validates each feed's positive answer and timestamp, then converts
-    // to quote per base. Missing, future-dated or stale observations revert.
-    ref = referenceAdapter.readValidatedQuotePerBase()
-    require(abs(P - ref) * 10000 <= MAX_DEV_BPS * ref, "price deviation")
-
-    return executeSwap(amount_in, direction, P)
+    Swap[Swap requested] --> Live{"P positive and pool active?"}
+    Store -.->|current quote state| Live
+    Live -->|No| Revert
+    Live -->|Yes| BlockAge{"Block age within<br/>EXPIRY_BLOCKS?"}
+    BlockAge -->|No| Revert
+    BlockAge -->|Yes| SourceAge{"Source age within<br/>MAX_SOURCE_AGE_S?"}
+    SourceAge -->|No| Revert
+    SourceAge -->|Yes| Ref[Read independent reference]
+    Ref --> ValidRef{"Positive, fresh, valid timestamp,<br/>and converted to quote per base?"}
+    ValidRef -->|No| Revert
+    ValidRef -->|Yes| Deviation{"Deviation within<br/>MAX_DEV_BPS?"}
+    Deviation -->|No| Revert
+    Deviation -->|Yes| Execute[Execute swap using P]
 ```
+
+`EXPIRY_BLOCKS` and `MAX_SOURCE_AGE_S` come from Section 4. `MAX_DEV_BPS = 50`
+is illustrative. With all prices on one fixed-point scale, the integer check is
+`abs(P - ref) * 10_000 <= MAX_DEV_BPS * ref`.
 
 For BNB/USDT, the adapter can divide BNB/USD by USDT/USD after normalizing decimals;
 for ETH/USDC, use ETH/USD and USDC/USD. Validate every constituent feed's age against
