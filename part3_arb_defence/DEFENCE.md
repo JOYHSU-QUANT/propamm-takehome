@@ -28,30 +28,55 @@ Flashloan funding makes the route atomic without upfront capital; a funded trade
 exploit the same gap. Curve slippage and real inventory limit the profitable size.
 The stale duration and reserves are unknown.
 
-### Exposure scale
+## Exposure scale (supplement)
 
-For quote-to-base ($Y\to X$), stale-price exposure can span both phases. Stable
-capacity and its no-fee loss at external price $R$ are:
+| Symbol | Meaning | Unit |
+|---|---|---|
+| $x,y$ | Real base and quote reserves before Stable | Base token, quote token |
+| $X,Y$ | Effective base and quote reserves at the start of Curve | Base token, quote token |
+| $\alpha$ | Concentration factor used to form effective reserves | Dimensionless |
+| $P,R$ | PropAMM oracle price and external market price | Quote per base |
+| $c$ | Stable quote-input capacity | Quote token |
+| $q,q^*$ | Net Curve quote input and profit-maximizing input | Quote token |
+| $\pi_s,\pi_c$ | No-fee trader gross profit, equal to pool mark-to-market loss | Quote token |
+
+For a quote-to-base (Y to X) trade, stale-price exposure can span both phases.
+Stable capacity and its no-fee loss are:
 
 ```math
-c=\max\left(0,\frac{Px-y}{2}\right),
-\qquad \pi_s=c\left(\frac{R}{P}-1\right).
+\begin{aligned}
+c &= \max\left(0,\frac{Px-y}{2}\right), \\
+\pi_s &= c\left(\frac{R}{P}-1\right).
+\end{aligned}
 ```
 
-Only an X-heavy pool ($Px>y$) has positive $c$, so Stable capacity is not a general
-attack bound. For effective Curve reserves $X,Y$ and net quote input $q$:
+Stable capacity is positive only when `Px > y`, so it is not a general attack bound.
+Curve profit, its maximizing input, and the resulting maximum are:
 
 ```math
-\pi_c(q)=R\frac{Xq}{Y+q}-q,
-\qquad q^*=\max\left(0,\sqrt{RXY}-Y\right),
-\qquad \pi_c(q^*)=\left[\max\left(0,\sqrt{RX}-\sqrt{Y}\right)\right]^2.
+\begin{aligned}
+\pi_c(q) &= R\frac{Xq}{Y+q}-q, \\
+q^* &= \max\left(0,\sqrt{RXY}-Y\right), \\
+\pi_c(q^*) &= \left[\max\left(0,\sqrt{RX}-\sqrt{Y}\right)\right]^2.
+\end{aligned}
 ```
 
-At a balanced curve, $Y/X=P$, hence $q^*/Y=\sqrt{R/P}-1\approx3.1\%$ for
-$R/P=624/587$. As an illustration, $x=100$ WBNB, $y=58{,}700$ USDT and
-$\alpha=1.02$ give $q^*=1{,}858.17$ USDT and maximum gross profit $57.67$ USDT
-before fees: the observed $0.627$ is about $1/92$ of that maximum. These are not the
-observed reserves; fees and real-reserve limits reduce the result.
+At a balanced Curve:
+
+```math
+\begin{aligned}
+\frac{Y}{X}=P
+\quad\Longrightarrow\quad
+\frac{q^*}{Y} &= \sqrt{\frac{R}{P}}-1 \\
+&=\sqrt{\frac{624}{587}}-1
+\approx 3.10\%.
+\end{aligned}
+```
+
+Illustrative case, not observed reserves: 100 WBNB and 58,700 USDT, alpha 1.02,
+oracle 587, market 624, and zero fees give an optimal net input of 1,858.17 USDT
+and maximum gross profit of 57.67 USDT. The observed 0.627 USDT is about 1/92 of
+that maximum. Fees and real-reserve limits reduce the result.
 
 ## 2. Detect
 
