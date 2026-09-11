@@ -55,22 +55,38 @@ Curve profit, its maximizing input, and the resulting maximum are:
 
 ```math
 \begin{aligned}
-\pi_c(q) &= R\frac{Xq}{Y+q}-q, \\
-q^* &= \max\left(0,\sqrt{RXY}-Y\right), \\
-\pi_c(q^*) &= \left[\max\left(0,\sqrt{RX}-\sqrt{Y}\right)\right]^2.
+\pi_c(q) &= R\frac{Xq}{Y+q}-q,
+&& \text{profit function}, \\
+q^* &= \max\left(0,\sqrt{RXY}-Y\right),
+&& \text{optimal input}, \\
+\pi_c(q^*) &= \left[\max\left(0,\sqrt{RX}-\sqrt{Y}\right)\right]^2,
+&& \text{maximum profit}.
 \end{aligned}
 ```
 
-At a balanced Curve:
+At a balanced Curve, the reserve ratio equals the oracle price. Because the external
+price exceeds the oracle price in this attack, the positive branch applies. Divide by
+the effective quote reserve and substitute the balance condition:
 
 ```math
 \begin{aligned}
-\frac{Y}{X}=P
-\quad\Longrightarrow\quad
-\frac{q^*}{Y} &= \sqrt{\frac{R}{P}}-1 \\
-&=\sqrt{\frac{624}{587}}-1
-\approx 3.10\%.
+\frac{Y}{X}=P,\quad R>P
+&\quad\Longrightarrow\quad \sqrt{RXY}>Y, \\[4pt]
+\frac{q^*}{Y}
+&=\frac{\sqrt{RXY}-Y}{Y} \\
+&=\sqrt{\frac{RXY}{Y^2}}-1 \\
+&=\sqrt{\frac{RX}{Y}}-1 \\
+&=\sqrt{\frac{R}{Y/X}}-1 \\
+&=\sqrt{\frac{R}{P}}-1.
 \end{aligned}
+```
+
+For the observed price ratio:
+
+```math
+\frac{q^*}{Y}
+=\sqrt{\frac{624}{587}}-1
+\approx 3.10\%.
 ```
 
 Illustrative case, not observed reserves: 100 WBNB and 58,700 USDT, alpha 1.02,
