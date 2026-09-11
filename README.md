@@ -34,6 +34,7 @@ is only relative to its own oracle; with $P$ 6% below market, the ask was a 6% d
 PropAMM leg filled more than 30 bps against the pool versus a reference price; a
 flashloan raises severity but is not required. The defence is an on-chain expiry plus a
 deviation bound against an independent reference; the expiry is derived from refresh
-cadence, the 2 s WebSocket silence and inclusion latency: 5 blocks (BSC) and 3 (Base)
-at every-block refresh, 20 and 8 at the current 9.6 s cadence.
+cadence, the 2 s WebSocket silence and inclusion latency: 6 blocks (BSC) and 4 (Base)
+at every-block refresh, about 20 and 8 if the worst-case refresh gap matches the 9.6 s
+average cadence inferred from the gas budget.
 [Writeup](part3_arb_defence/DEFENCE.md) has the diagnosis, heuristics, pseudocode and working.

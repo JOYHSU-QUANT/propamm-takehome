@@ -35,7 +35,7 @@ class DetectionTests(unittest.TestCase):
         self.assertAlmostEqual(a.other_price, 10.627 / 0.01702, places=6)    # ~624.4
         self.assertAlmostEqual(a.pool_disadvantage_bps, (624 - 10 / 0.01702) / 624 * 1e4, places=6)
         self.assertGreater(a.pool_disadvantage_bps, 500)                      # ~585 bps
-        self.assertAlmostEqual(a.trader_profit_quote, 0.627, places=9)
+        self.assertAlmostEqual(a.trader_gross_profit_quote, 0.627, places=9)
 
     def test_part1_model_reproduces_the_observed_fill(self):
         # Balanced pool at the stale price 587: a 10 USDT buy fills on the curve
@@ -65,7 +65,7 @@ class DetectionTests(unittest.TestCase):
         ], reference_price=624)
         a = analyse_trade(tx)
         self.assertTrue(a.suspicious)
-        self.assertGreater(a.trader_profit_quote, 0)
+        self.assertGreater(a.trader_gross_profit_quote, 0)
 
     def test_single_direction_aggregator_route_is_not_flagged(self):
         # A router splits one buy across PropAMM and Pancake: no reverse leg.
@@ -104,6 +104,49 @@ class DetectionTests(unittest.TestCase):
         # conservatively flags the round trip.
         without_ref = analyse_trade(_tx(swaps))
         self.assertTrue(without_ref.suspicious)
+
+    def test_benign_round_trip_does_not_hide_a_later_attack(self):
+        # A fair round trip first, then the attack in the same transaction.
+        fair = [
+            _swap("PropAMM", "USDT", "WBNB", 100.0, 100 / 624),
+            _swap("PancakeV2", "WBNB", "USDT", 100 / 624, 100.05),
+        ]
+        tx = copy.deepcopy(OBSERVED_ATTACK)
+        tx["swaps"] = fair + tx["swaps"]
+        a = analyse_trade(tx)
+        self.assertTrue(a.suspicious)
+        self.assertGreaterEqual(a.pairs_checked, 2)   # cross-pairs under the "funded by" rule are fine
+        self.assertGreater(a.pool_disadvantage_bps, 500)   # the worst pair is reported
+
+    def test_flashloan_requires_same_lender_first_and_last(self):
+        for inter in (["Aave"], ["Aave", "PropAMM", "Venus"], ["PropAMM", "PancakeV2", "Aave"]):
+            tx = copy.deepcopy(OBSERVED_ATTACK)
+            tx["interactions"] = inter
+            tx["transfers"] = []
+            with self.subTest(interactions=inter):
+                self.assertFalse(analyse_trade(tx).flashloan)
+        tx = copy.deepcopy(OBSERVED_ATTACK)
+        tx["interactions"] = ["Aave", "PropAMM", "PancakeV2", "Aave"]
+        self.assertTrue(analyse_trade(tx).flashloan)
+
+    def test_chaining_follows_call_order(self):
+        # Sell WBNB on Pancake first, then buy it back cheaper from the stale PropAMM,
+        # keeping the difference. Funded by own inventory, still an arb against us.
+        tx = _tx([
+            _swap("PancakeV2", "WBNB", "USDT", 0.01702, 10.627),
+            _swap("PropAMM", "USDT", "WBNB", 10.0, 0.01702),
+        ], reference_price=624)
+        a = analyse_trade(tx)
+        self.assertTrue(a.round_trip)
+        self.assertTrue(a.suspicious)
+        self.assertAlmostEqual(a.trader_gross_profit_quote, 0.627, places=9)
+        # Same legs but the trader spent more than the first leg produced: the second
+        # leg is not funded by the first, so this is not one round trip.
+        tx = _tx([
+            _swap("PropAMM", "WBNB", "USDT", 0.01702, 10.0),
+            _swap("PancakeV2", "USDT", "WBNB", 10.627, 0.01702),
+        ], reference_price=624)
+        self.assertFalse(analyse_trade(tx).round_trip)
 
     def test_unchained_legs_are_not_a_round_trip(self):
         # Reverse direction but unrelated size: not one round trip.

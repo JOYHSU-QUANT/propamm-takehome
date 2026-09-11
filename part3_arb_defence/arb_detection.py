@@ -35,7 +35,9 @@ FLASHLOAN_PROTOCOLS = {"ListaDAO", "Venus", "Aave", "Radiant", "PancakeV3Flash",
 # A gap larger than fee + spread + normal slippage. 30 bps is far above the
 # 5 bps spread in the assignment and far below the 6% seen in the attack.
 DEFAULT_PRICE_GAP_BPS = 30.0
-# Two legs are "chained" if the second consumes the first's output within this tolerance.
+# The second leg is "funded by" the first if it spends at most the first leg's
+# output (plus tolerance for rounding). Spending less is allowed: the trader
+# may keep part of the proceeds.
 CHAIN_TOLERANCE = 0.01
 
 
@@ -70,7 +72,9 @@ class Analysis:
     other_price: float | None = None
     reference_price: float | None = None
     pool_disadvantage_bps: float | None = None
-    trader_profit_quote: float | None = None
+    # Gross: before flashloan fee, gas and any other execution cost.
+    trader_gross_profit_quote: float | None = None
+    pairs_checked: int = 0
     reasons: list[str] = field(default_factory=list)
 
 
@@ -82,22 +86,26 @@ def _legs(tx_data: dict) -> list[Leg]:
     ]
 
 
-def _chained(a: Leg, b: Leg) -> bool:
-    """b is the reverse leg of a and consumes (approximately) a's output."""
-    if a.token_out != b.token_in or a.token_in != b.token_out:
+def _chained(first: Leg, second: Leg) -> bool:
+    """second (later in call order) reverses first and is funded by its output."""
+    if first.index >= second.index:
         return False
-    return abs(b.amount_in - a.amount_out) <= CHAIN_TOLERANCE * a.amount_out
+    if first.token_out != second.token_in or first.token_in != second.token_out:
+        return False
+    return second.amount_in <= first.amount_out * (1 + CHAIN_TOLERANCE)
 
 
 def _has_flashloan(tx_data: dict) -> bool:
     inter = list(tx_data.get("interactions", []))
-    if inter and inter[0] in FLASHLOAN_PROTOCOLS and inter[-1] in FLASHLOAN_PROTOCOLS:
+    # Borrow and repay bracket the trade: same lender first and last, with at
+    # least one other call in between.
+    if len(inter) >= 3 and inter[0] == inter[-1] and inter[0] in FLASHLOAN_PROTOCOLS:
         return True
     # Fallback on transfers: same token goes lender -> caller first and caller -> lender
     # last, with at least the borrowed amount returned.
     caller = tx_data.get("caller")
     transfers = tx_data.get("transfers", [])
-    if not caller or not transfers:
+    if not caller or len(transfers) < 2:
         return False
     first, last = transfers[0], transfers[-1]
     return (
@@ -108,67 +116,81 @@ def _has_flashloan(tx_data: dict) -> bool:
     )
 
 
+def _gross_profit_quote(first: Leg, second: Leg, base: str, quote: str, ref: float) -> float:
+    """Net token flow to the trader over both legs, valued in quote at ref."""
+    net = {base: 0.0, quote: 0.0}
+    for leg in (first, second):
+        net[leg.token_out] += leg.amount_out
+        net[leg.token_in] -= leg.amount_in
+    return net[quote] + net[base] * ref
+
+
 def analyse_trade(tx_data: dict, price_gap_bps: float = DEFAULT_PRICE_GAP_BPS) -> Analysis:
     """Full diagnostic. is_suspicious_trade() is a thin wrapper over this."""
     base = tx_data.get("base_token", "WBNB")
     quote = tx_data.get("quote_token", "USDT")
     a = Analysis(flashloan=_has_flashloan(tx_data))
-    legs = _legs(tx_data)
-
-    propamm_legs = [l for l in legs if l.protocol == PROPAMM and l.price(base, quote) is not None]
+    legs = [l for l in _legs(tx_data) if l.price(base, quote) is not None]
+    propamm_legs = [l for l in legs if l.protocol == PROPAMM]
     if not propamm_legs:
         a.reasons.append("no PropAMM swap on the base/quote pair")
         return a
 
-    # Find a PropAMM leg with a reverse leg on another venue, in either order.
-    pair = None
+    ref_given = tx_data.get("reference_price")
+
+    # Evaluate every chained (PropAMM, other-venue) pair in call order and keep
+    # the one that is worst for the pool. A benign round trip earlier in the
+    # same transaction must not hide a later attack.
+    worst = None
     for pa in propamm_legs:
         for other in legs:
-            if other.protocol == PROPAMM or other.price(base, quote) is None:
+            if other.protocol == PROPAMM:
                 continue
-            if _chained(pa, other) or _chained(other, pa):
-                pair = (pa, other)
-                break
-        if pair:
-            break
+            if _chained(pa, other):
+                first, second = pa, other
+            elif _chained(other, pa):
+                first, second = other, pa
+            else:
+                continue
+            a.pairs_checked += 1
+            ref = float(ref_given) if ref_given else other.price(base, quote)
+            pa_price = pa.price(base, quote)
+            # Pool loses when it sells base below the reference or buys base above it.
+            if pa.sells_base(base):
+                disadvantage_bps = (ref - pa_price) / ref * 1e4
+            else:
+                disadvantage_bps = (pa_price - ref) / ref * 1e4
+            candidate = (disadvantage_bps, pa, other, first, second, ref)
+            if worst is None or disadvantage_bps > worst[0]:
+                worst = candidate
 
-    if pair is None:
-        a.reasons.append("no reverse leg on another venue chained to the PropAMM swap")
+    if worst is None:
+        a.reasons.append("no reverse leg on another venue funded by the PropAMM swap (or vice versa)")
         return a
 
-    pa, other = pair
+    disadvantage_bps, pa, other, first, second, ref = worst
     a.round_trip = True
     a.propamm_price = pa.price(base, quote)
     a.other_price = other.price(base, quote)
-    a.reference_price = float(tx_data["reference_price"]) if tx_data.get("reference_price") else a.other_price
+    a.reference_price = ref
+    a.pool_disadvantage_bps = disadvantage_bps
+    a.trader_gross_profit_quote = _gross_profit_quote(first, second, base, quote, ref)
 
-    # Pool loses when it sells base below the reference or buys base above it.
-    if pa.sells_base(base):
-        disadvantage = (a.reference_price - a.propamm_price) / a.reference_price
-    else:
-        disadvantage = (a.propamm_price - a.reference_price) / a.reference_price
-    a.pool_disadvantage_bps = disadvantage * 1e4
-
-    first, second = (pa, other) if pa.index < other.index else (other, pa)
-    if first.token_in == quote:
-        a.trader_profit_quote = second.amount_out - first.amount_in
-    else:  # started with base; express profit in quote at the reference
-        a.trader_profit_quote = (second.amount_out - first.amount_in) * a.reference_price
-
-    if a.pool_disadvantage_bps >= price_gap_bps:
+    if disadvantage_bps >= price_gap_bps:
         a.suspicious = True
         a.reasons.append(
-            f"PropAMM leg filled {a.pool_disadvantage_bps:.1f} bps against the pool "
-            f"(PropAMM {a.propamm_price:.2f} vs reference {a.reference_price:.2f}, "
-            f"threshold {price_gap_bps:.0f} bps)"
+            f"PropAMM leg filled {disadvantage_bps:.1f} bps against the pool "
+            f"(PropAMM {a.propamm_price:.2f} vs reference {ref:.2f}, threshold {price_gap_bps:.0f} bps)"
         )
         if a.flashloan:
             a.reasons.append("flashloan bracket present: capital-free, atomic execution")
     else:
         a.reasons.append(
             f"round trip present but PropAMM leg within {price_gap_bps:.0f} bps of reference "
-            f"({a.pool_disadvantage_bps:.1f} bps)"
+            f"({disadvantage_bps:.1f} bps)"
         )
+    if a.pairs_checked > 1:
+        a.reasons.append(f"{a.pairs_checked} chained pairs checked; worst reported")
     return a
 
 
@@ -208,6 +230,6 @@ if __name__ == "__main__":
     print(f"other venue fill     : {result.other_price:.2f} USDT/WBNB")
     print(f"reference            : {result.reference_price:.2f} USDT/WBNB")
     print(f"pool disadvantage    : {result.pool_disadvantage_bps:.1f} bps")
-    print(f"trader profit        : {result.trader_profit_quote:.3f} USDT")
+    print(f"trader gross profit  : {result.trader_gross_profit_quote:.3f} USDT (before loan fee and gas)")
     for r in result.reasons:
         print(f"  - {r}")
