@@ -296,13 +296,11 @@ T_r=T_i=T_m=b.
 ```math
 \begin{aligned}
 N_{\mathrm{BSC}}
-&=\left\lceil\frac{0.75+2+0.75+0.75}{0.75}\right\rceil=6, \\
+&=\left\lceil\frac{0.75+2+0.75+0.75}{0.75}\right\rceil=6,
+&\qquad A_{\mathrm{BSC}}&=\left\lceil6\times0.75\right\rceil=5\ \mathrm{s}, \\
 N_{\mathrm{Base}}
-&=\left\lceil\frac{2+2+2+2}{2}\right\rceil=4, \\[4pt]
-A_{\mathrm{BSC}}
-&=\left\lceil6\times0.75\right\rceil=5\ \mathrm{s}, \\
-A_{\mathrm{Base}}
-&=\left\lceil4\times2\right\rceil=8\ \mathrm{s}.
+&=\left\lceil\frac{2+2+2+2}{2}\right\rceil=4,
+&\qquad A_{\mathrm{Base}}&=\left\lceil4\times2\right\rceil=8\ \mathrm{s}.
 \end{aligned}
 ```
 
@@ -341,13 +339,11 @@ T_{r,\mathrm{Base}}
 ```math
 \begin{aligned}
 N_{\mathrm{BSC}}
-&=\left\lceil\frac{9.75+2+0.75+0.75}{0.75}\right\rceil=18, \\
+&=\left\lceil\frac{9.75+2+0.75+0.75}{0.75}\right\rceil=18,
+&\qquad A_{\mathrm{BSC}}&=\left\lceil18\times0.75\right\rceil=14\ \mathrm{s}, \\
 N_{\mathrm{Base}}
-&=\left\lceil\frac{10+2+2+2}{2}\right\rceil=8, \\[4pt]
-A_{\mathrm{BSC}}
-&=\left\lceil18\times0.75\right\rceil=14\ \mathrm{s}, \\
-A_{\mathrm{Base}}
-&=\left\lceil8\times2\right\rceil=16\ \mathrm{s}.
+&=\left\lceil\frac{10+2+2+2}{2}\right\rceil=8,
+&\qquad A_{\mathrm{Base}}&=\left\lceil8\times2\right\rceil=16\ \mathrm{s}.
 \end{aligned}
 ```
 
