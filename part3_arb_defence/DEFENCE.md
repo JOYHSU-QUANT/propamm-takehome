@@ -256,8 +256,12 @@ do not protect against traders using their own funds.
 
 ## 4. Threshold: price expiry
 
-Use **6 BSC blocks and 4 Base blocks if refreshing every block**, under the latency
-budget below. A slower refresh schedule requires recalculation.
+Use **6 BSC blocks and 4 Base blocks** for the every-block baseline. If refreshes
+instead follow the 9.57-second cadence inferred from current spend, use **18 BSC
+blocks and 8 Base blocks**. Select the scenario that matches the deployed cadence.
+
+The expiry covers four sources of delay: the scheduled refresh wait, the expected
+2-second WebSocket silence, transaction inclusion, and an RPC/scheduling margin.
 
 | Symbol | Budget | Unit |
 |---|---|---|
@@ -268,6 +272,8 @@ budget below. A slower refresh schedule requires recalculation.
 | $T_m$ | Scheduling and RPC margin: one block | Seconds |
 | $N$ | Maximum permitted block age (`EXPIRY_BLOCKS`) | Blocks |
 | $A$ | Maximum source age (`MAX_SOURCE_AGE_S`), rounded to whole seconds | Seconds |
+| $n_{\mathrm{day}}$ | Refresh count implied by daily spend | Refreshes per day |
+| $T_{\mathrm{avg}}$ | Average refresh interval implied by daily spend | Seconds |
 
 Budget the refresh wait, feed silence, inclusion, and margin separately:
 
@@ -276,39 +282,81 @@ N = \left\lceil \frac{T_r + T_s + T_i + T_m}{b} \right\rceil,
 \qquad A = \left\lceil Nb \right\rceil.
 ```
 
-For every-block refresh, $T_r=T_i=T_m=b$:
+The contract accepts ages equal to the limits and rejects greater ages.
+
+### Scenario 1 — Every-block refresh baseline
+
+This is the most aggressive refresh baseline. Set the refresh, inclusion, and margin
+allowances to one block each:
+
+```math
+T_r=T_i=T_m=b.
+```
 
 ```math
 \begin{aligned}
-N_{\mathrm{BSC}} &= \left\lceil \frac{0.75+2+0.75+0.75}{0.75} \right\rceil = 6, \\
-N_{\mathrm{Base}} &= \left\lceil \frac{2+2+2+2}{2} \right\rceil = 4.
+N_{\mathrm{BSC}}
+&=\left\lceil\frac{0.75+2+0.75+0.75}{0.75}\right\rceil=6, \\
+N_{\mathrm{Base}}
+&=\left\lceil\frac{2+2+2+2}{2}\right\rceil=4.
 \end{aligned}
 ```
 
-| Refresh schedule | BSC: $N$ / $A$ | Base: $N$ / $A$ |
-|---|---|---|
-| Every block | **6 blocks / 5 s** | **4 blocks / 8 s** |
-| Every 13 BSC blocks / 5 Base blocks | **18 blocks / 14 s** | **8 blocks / 16 s** |
+| Chain | Refresh interval $T_r$ | Block expiry $N$ | Source-age limit $A$ |
+|---|---:|---:|---:|
+| BSC | 1 block = 0.75 s | **6 blocks = 4.5 s** | **5 s** |
+| Base | 1 block = 2 s | **4 blocks = 8 s** | **8 s** |
 
-The second row illustrates the cadence inferred from the assignment's cost figures:
+### Scenario 2 — Cost-aligned refresh cadence
+
+The stated spend is 7.2 BNB/day per chain. Using 627 USD/BNB and 0.50 USD per
+refresh gives:
 
 ```math
-T_{\mathrm{avg}} = \frac{86400 \times 0.50}{7.2 \times 627}
-\approx 9.57\ \mathrm{s}.
+\begin{aligned}
+n_{\mathrm{day}}
+&=\frac{7.2\times627}{0.50}=9{,}028.8, \\
+T_{\mathrm{avg}}
+&=\frac{86{,}400}{n_{\mathrm{day}}}\approx9.57\ \mathrm{s}.
+\end{aligned}
 ```
 
-Here 0.50 is USD per refresh and $7.2\times627$ is USD per day. Rounding the average
-up to scheduled blocks gives $T_r=9.75$ s on BSC and $T_r=10$ s on Base. The resulting
-expiry is $\lceil(9.75+2+0.75+0.75)/0.75\rceil=18$ and
-$\lceil(10+2+2+2)/2\rceil=8$ blocks. The contradictory parenthetical gas estimate in
-the assignment is ignored in favor of the stated 0.50 USD per refresh.
+Round the cadence up to whole blocks before recomputing expiry:
+
+```math
+\begin{aligned}
+T_{r,\mathrm{BSC}}
+&=\left\lceil\frac{9.57}{0.75}\right\rceil(0.75)
+=13\ \text{blocks}=9.75\ \mathrm{s}, \\
+T_{r,\mathrm{Base}}
+&=\left\lceil\frac{9.57}{2}\right\rceil(2)
+=5\ \text{blocks}=10\ \mathrm{s}.
+\end{aligned}
+```
+
+```math
+\begin{aligned}
+N_{\mathrm{BSC}}
+&=\left\lceil\frac{9.75+2+0.75+0.75}{0.75}\right\rceil=18, \\
+N_{\mathrm{Base}}
+&=\left\lceil\frac{10+2+2+2}{2}\right\rceil=8.
+\end{aligned}
+```
+
+| Chain | Rounded refresh interval $T_r$ | Block expiry $N$ | Source-age limit $A$ |
+|---|---:|---:|---:|
+| BSC | 13 blocks = 9.75 s | **18 blocks = 13.5 s** | **14 s** |
+| Base | 5 blocks = 10 s | **8 blocks = 16 s** | **16 s** |
+
+The assignment's parenthetical gas estimate conflicts with 0.50 USD per refresh;
+the calculation uses the explicit 0.50 USD figure.
 
 These are planning budgets, not measured worst cases. Validate refresh and inclusion
 delays before deployment; average spend alone does not establish a safe expiry.
-The checks allow age equal to the limit and reject greater ages. Source age remains
-independent of block age, so resubmission or slower blocks cannot keep old data alive.
+Source age remains independent of block age, so resubmission or slower blocks cannot
+keep old data alive.
 
-**The 2-second silence is expected data ageing.** It fits the budget but does not
-guarantee price accuracy. Longer gaps eventually expire the quote; moves within the
-window rely on the reference check, subject to its own lag. The attack's stale duration
-is unknown, so expiry alone cannot be claimed to have prevented it.
+**WebSocket silence.** Treat the expected 2-second silence as staleness exposure and
+include it in the budget, but do not halt immediately. A longer gap eventually expires
+the quote; price moves within the window rely on the independent deviation check. The
+attack's stale duration is unknown, so expiry alone cannot be claimed to have stopped it.
