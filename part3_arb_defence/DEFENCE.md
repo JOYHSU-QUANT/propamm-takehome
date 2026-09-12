@@ -175,6 +175,24 @@ Reject swaps when the quote is expired, its source observation is too old, or it
 price deviates from an independent reference. The updater must preserve the source
 timestamp when resending an observation.
 
+### Notation and constants
+
+| Symbol | Pseudocode name | Meaning | Unit / initial setting |
+|---|---|---|---|
+| $P$ | `P` | Binance-derived primary price stored with its source timestamp | Quote per base |
+| $R$ | `ref` | Validated cross-rate: BNB/USD ÷ USDT/USD on BSC; ETH/USD ÷ USDC/USD on Base | Quote per base |
+| $t_{\mathrm{src}}$ | `source_ts` | Timestamp of the source observation behind $P$ | Unix seconds |
+| $b_{\mathrm{write}}$ | `write_block` | Block in which $P$ was stored | Block number |
+| $N$ | `EXPIRY_BLOCKS` | Maximum age since `write_block` | 6 BSC blocks / 4 Base blocks at every-block refresh |
+| $A$ | `MAX_SOURCE_AGE_S` | Maximum age since `source_ts` | 5 s on BSC / 8 s on Base at every-block refresh |
+| $H_{\mathrm{ref}}$ | `REF_MAX_AGE_S` | Maximum age of each reference feed | Published heartbeat plus two blocks |
+| $D_{\max}$ | `MAX_DEV_BPS` | Maximum deviation between $P$ and $R$ | 50 bps initially |
+| $V_{\mathrm{block}}$ | `V_BLOCK` | Maximum aggregate quote notional accepted per block | USD-equivalent quote token; derived below |
+| $L_{\mathrm{block}}$ | `L_BLOCK` | Tolerated mark-to-market loss per block | USD; deployment parameter |
+| $e_{\mathrm{ref}}$ | `REF_ERROR_BPS` | Reference error allowance | Bps; deployment parameter |
+
+### Guard flow
+
 ```mermaid
 flowchart TD
     Update[updatePrice newP, observed_at] --> ValidUpdate{"Authorized, positive price,<br/>valid and newer source timestamp?"}
@@ -195,35 +213,32 @@ flowchart TD
     ValidRef -->|No| Revert
     ValidRef -->|Yes| Deviation{"Deviation within<br/>MAX_DEV_BPS?"}
     Deviation -->|No| Revert
-    Deviation -->|Yes| Budget{"Block notional within<br/>V_BLOCK?"}
+    Deviation -->|Yes| Budget{"Used block notional plus trade<br/>within V_BLOCK?"}
     Budget -->|No| Revert
     Budget -->|Yes| Execute[Execute swap using P]
 ```
 
-`EXPIRY_BLOCKS` and `MAX_SOURCE_AGE_S` come from Section 4. `MAX_DEV_BPS = 50`
-is illustrative. With all prices on one fixed-point scale, the integer check is
+`EXPIRY_BLOCKS` and `MAX_SOURCE_AGE_S` come from Section 4. With all prices on one
+fixed-point scale, the integer deviation check is
 `abs(P - ref) * 10_000 <= MAX_DEV_BPS * ref`.
 
-| Control | Configuration | On failure |
-|---|---|---|
-| Primary price | Binance-derived price from the authorized updater; preserve `observed_at` | Reject update |
-| Source age / block expiry | Section 4: 5 s / 6 blocks on BSC; 8 s / 4 blocks on Base for every-block refresh | Revert swap |
-| Independent reference | BNB/USD divided by USDT/USD on BSC; ETH/USD divided by USDC/USD on Base | Revert swap |
-| Reference age | Each deployed feed's published heartbeat plus two blocks; reject future timestamps | Revert swap |
-| Price deviation | `MAX_DEV_BPS = 50` initially; calibrate from reference error and normal basis | Revert swap |
-| Block notional | `V_BLOCK` derived from the loss budget below | Revert excess swap |
-| Automatic fallback | None; a DEX TWAP requires separate manipulation and lag limits before use | Pause and alert |
+Every failed guard reverts. If either price source is unavailable, the bot pauses and
+alerts; there is no automatic fallback. A DEX TWAP requires separate manipulation and
+lag limits before it can be enabled.
+
+### Per-block loss limit
 
 As defence in depth, cap aggregate quote notional per block by a loss budget:
 
 ```math
 V_{\mathrm{block}}\le
-\frac{L_{\mathrm{block}}}{(\mathrm{MAX\_DEV\_BPS}+e_{\mathrm{ref}})/10^4},
+\frac{L_{\mathrm{block}}}{(D_{\max}+e_{\mathrm{ref}})/10^4}.
 ```
 
-where $L_{\mathrm{block}}$ is tolerated USD loss and $e_{\mathrm{ref}}$ is the
-reference error budget in bps. Both are deployment risk parameters; the assignment
-does not provide values from which to set them.
+Here $V_{\mathrm{block}}$ and `V_BLOCK` are the same limit. Before execution, the
+contract checks `block_notional[block.number] + trade_notional <= V_BLOCK`. The loss
+and reference-error budgets are deployment parameters; the assignment does not provide
+values from which to set them.
 
 Validate every constituent feed's `updatedAt`: Chainlink feeds update on heartbeat or
 deviation triggers, so read time does not prove freshness.
